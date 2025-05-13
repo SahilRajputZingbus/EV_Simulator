@@ -37,24 +37,45 @@ if "routes_input" not in st.session_state:
 st.title("🔌 EV Bus Network Simulator - Full Version")
 st.sidebar.header("Simulation Inputs")
 
+if st.sidebar.button("🔄 Load Synced Settings from MongoDB"):
+    synced = config_collection.find_one({"_id": "default_config"})
+    if synced:
+        st.session_state.routes_input = synced["routes_input"]
+        st.session_state.bus_per_route = synced["bus_per_route"]
+        st.session_state.departure_interval = synced["departure_interval"]
+        st.session_state.blackout_start = datetime.strptime(synced["blackout_start"], "%H:%M:%S").time()
+        st.session_state.blackout_end = datetime.strptime(synced["blackout_end"], "%H:%M:%S").time()
+        st.session_state.charger_locations_input = synced["charger_locations_input"]
+        st.session_state.charger_config = synced["charger_config"]
+        st.session_state["_trigger_rerun"] = True  # ✅ Set a rerun flag
+
+if st.session_state.get("_trigger_rerun", False):
+    st.session_state["_trigger_rerun"] = False
+    st.rerun()
+
 valid_intervals = [15, 30, 45, 60]
 
 if st.session_state.departure_interval not in valid_intervals:
     st.session_state.departure_interval = 30  
 
-routes_input = st.sidebar.text_area("Enter Routes (comma-separated)", st.session_state.routes_input)
+routes_input = st.sidebar.text_area("Enter Routes (comma-separated)", st.session_state.routes_input,key="routes_input")
 routes = [r.strip() for r in routes_input.split(",")]
 
-bus_per_route = st.sidebar.number_input("Number of Buses per Route", 1, 50, st.session_state.bus_per_route)
+bus_per_route = st.sidebar.selectbox(
+    "Number of Buses per Route", 
+    list(range(1, 51)), 
+    index=st.session_state.bus_per_route - 1,
+    key="bus_per_route"
+)
 departure_interval = st.sidebar.selectbox(
     "Departure Interval (minutes)", 
     valid_intervals, 
-    index=valid_intervals.index(st.session_state.departure_interval)
+    index=valid_intervals.index(st.session_state.departure_interval),key="departure_interval"
 )
-blackout_start = st.sidebar.time_input("Blackout Start", st.session_state.blackout_start)
-blackout_end = st.sidebar.time_input("Blackout End", st.session_state.blackout_end)
+blackout_start = st.sidebar.time_input("Blackout Start", st.session_state.blackout_start, key="blackout_start")
+blackout_end = st.sidebar.time_input("Blackout End", st.session_state.blackout_end, key="blackout_end")
 
-charger_locations_input = st.sidebar.text_area("Charging Locations (comma-separated)", st.session_state.charger_locations_input)
+charger_locations_input = st.sidebar.text_area("Charging Locations (comma-separated)", st.session_state.charger_locations_input, key="charger_locations_input")
 charger_locations = [loc.strip() for loc in charger_locations_input.split(",")]
 
 charger_config = {}
@@ -78,19 +99,7 @@ if st.sidebar.button("✅ Sync Settings to MongoDB"):
     config_collection.update_one({"_id": "default_config"}, {"$set": config}, upsert=True)
     st.sidebar.success("Settings synced to MongoDB.")
 
-if st.sidebar.button("🔄 Load Synced Settings from MongoDB"):
-    synced = config_collection.find_one({"_id": "default_config"})
-    if synced:
-        st.session_state.routes_input = synced["routes_input"]
-        st.session_state.bus_per_route = synced["bus_per_route"]
-        st.session_state.departure_interval = synced["departure_interval"]
-        st.session_state.blackout_start = datetime.strptime(synced["blackout_start"], "%H:%M:%S").time()
-        st.session_state.blackout_end = datetime.strptime(synced["blackout_end"], "%H:%M:%S").time()
-        st.session_state.charger_locations_input = synced["charger_locations_input"]
-        st.session_state.charger_config = synced["charger_config"]
-        st.rerun()  
-    else:
-        st.sidebar.warning("No synced settings found.")
+
 
 st.header("📋 Bus Schedule")
 base_time = datetime.strptime("04:00", "%H:%M")
