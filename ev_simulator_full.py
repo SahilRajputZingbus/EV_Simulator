@@ -558,25 +558,25 @@ with tabs[0]:
                     "Finish": event["end_time"],
                     "Service": event.get("service", "Unknown")
                 })
-            df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
 
             # Create Gantt chart
-            if df.empty:
-                st.write("No charging events to display.")
-            else:
-                fig = px.timeline(
-                    df,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="Charger",
-                    color="Service",
-                    title="Charging Station Gantt Chart",
-                )
+        if df.empty:
+            st.write("No charging events to display.")
+        else:
+            fig = px.timeline(
+                df,
+                x_start="Start",
+                x_end="Finish",
+                y="Charger",
+                color="Service",
+                title="Charging Station Gantt Chart",
+            )
 
-            # Reverse Y-axis so Charger 1 is at the top
-                fig.update_yaxes(autorange="reversed")
+        # Reverse Y-axis so Charger 1 is at the top
+            fig.update_yaxes(autorange="reversed")
 
-                st.plotly_chart(fig)
+            st.plotly_chart(fig)
 
 
 # --- Service Screen ---
@@ -781,18 +781,18 @@ with tabs[1]:
                             st.session_state.temp_route[i - 1],
                             st.session_state.temp_route[i],
                         )
-                        st.experimental_rerun()
+                        st.rerun()
                 with col4:
                     if i < len(st.session_state.temp_route) - 1 and st.button("⬇", key=f"down_{i}"):
                         st.session_state.temp_route[i], st.session_state.temp_route[i + 1] = (
                             st.session_state.temp_route[i + 1],
                             st.session_state.temp_route[i],
                         )
-                        st.experimental_rerun()
+                        st.rerun()
                 with col5:
                     if st.button("🗑️", key=f"delete_{i}"):
                         st.session_state.temp_route.pop(i)
-                        st.experimental_rerun()
+                        st.rerun()
     if submitted:
         if st.session_state.temp_route:
             distance_time_matrix= [
