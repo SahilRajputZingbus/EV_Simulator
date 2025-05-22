@@ -1,1 +1,8 @@
+streamlit
+streamlit-folium
+folium
+pandas
+googlemaps
+polyline
+plotly
 pymongo
