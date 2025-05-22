@@ -530,15 +530,17 @@ with tabs[0]:
                 st.session_state.charging_stations.at[idx, 'Latitude'] = new_lat
                 st.session_state.charging_stations.at[idx, 'Longitude'] = new_lon
                 st.success(f"Station '{selected}' updated.")
-    
-    st.subheader("Charger Allocation")
-    selected = st.selectbox("Select Station for Allocation View", st.session_state.charging_stations['Station Name'].tolist(), key="alloc_view") 
-    rows=[]
-    charging_events=st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Charging Events"]
-    total_chargers = st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Number of Chargers"]
-    for charger_num in range(1, total_chargers + 1):
-        charger_key = str(charger_num)
-        events = charging_events.get(charger_key, [])
+    if st.session_state.charging_stations.empty:
+        st.warning("No charging stations available.")
+    else:
+        st.subheader("Charger Allocation")
+        selected = st.selectbox("Select Station for Allocation View", st.session_state.charging_stations['Station Name'].tolist(), key="alloc_view") 
+        rows=[]
+        charging_events=st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Charging Events"]
+        total_chargers = st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Number of Chargers"]
+        for charger_num in range(1, total_chargers + 1):
+            charger_key = str(charger_num)
+            events = charging_events.get(charger_key, [])
 
         if not events:
             # Add a dummy row with minimal span for display
@@ -556,25 +558,25 @@ with tabs[0]:
                     "Finish": event["end_time"],
                     "Service": event.get("service", "Unknown")
                 })
-    df = pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
 
-    # Create Gantt chart
-    if df.empty:
-        st.write("No charging events to display.")
-    else:
-        fig = px.timeline(
-            df,
-            x_start="Start",
-            x_end="Finish",
-            y="Charger",
-            color="Service",
-            title="Charging Station Gantt Chart",
-        )
+            # Create Gantt chart
+            if df.empty:
+                st.write("No charging events to display.")
+            else:
+                fig = px.timeline(
+                    df,
+                    x_start="Start",
+                    x_end="Finish",
+                    y="Charger",
+                    color="Service",
+                    title="Charging Station Gantt Chart",
+                )
 
-    # Reverse Y-axis so Charger 1 is at the top
-        fig.update_yaxes(autorange="reversed")
+            # Reverse Y-axis so Charger 1 is at the top
+                fig.update_yaxes(autorange="reversed")
 
-        st.plotly_chart(fig)
+                st.plotly_chart(fig)
 
 
 # --- Service Screen ---
