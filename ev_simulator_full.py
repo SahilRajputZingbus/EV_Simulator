@@ -183,7 +183,6 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                 'distance_from_prev_km': 0.0,
                 'battery_remaining_kwh': round(battery_remaining, 2)
             })
-            st.write(bus_schedule)
             for i in range(len(route) - 1):
                 curr_station = route[i]
                 next_station = route[i + 1]
