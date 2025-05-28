@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from pymongo import MongoClient
 import json
 import hashlib
-import copy
 import time
 
 st.set_page_config(page_title="EV Network Planning", layout="wide")
@@ -135,6 +134,21 @@ def init_session_state():
 init_session_state()
     
 
+def round_to_previous_slot(dt):
+    """Rounds datetime down to nearest 15-minute slot."""
+    minute = (dt.minute // 15) * 15
+    return dt.replace(minute=minute, second=0, microsecond=0)
+
+def round_to_next_slot(dt):
+    """Rounds datetime up to nearest 15-minute slot."""
+    minute = ((dt.minute + 14) // 15) * 15
+    if minute == 60:
+        dt += timedelta(hours=1)
+        minute = 0
+    return dt.replace(minute=minute, second=0, microsecond=0)
+
+
+
 def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
     charging_events = []
     bus_schedule = []
@@ -184,7 +198,6 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                 'battery_remaining_kwh': round(battery_remaining, 2)
             })
             for i in range(len(route) - 1):
-                curr_station = route[i]
                 next_station = route[i + 1]
 
                 dist_km = dtm[i + 1]["distance_m"] / 1000
@@ -194,17 +207,8 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                 arrival_time = departure_time + travel_time
                 departure_time = arrival_time
 
-                bus_schedule.append({
-                    'service': service['Service Name'],
-                    'bus_name': bus_name,
-                    'station': next_station['Station'],
-                    'arrival': arrival_time.strftime("%H:%M"),
-                    'departure': departure_time.strftime("%H:%M"),
-                    'distance_from_prev_km': round(dist_km, 2),
-                    'battery_remaining_kwh': round(battery_remaining, 2)
-                })
-                if next_station==route[-1]:
-                    bus_schedule[-1]["departure"] = "--"
+                
+                
 
                 if next_station['ChargeFlag']:
                     remaining = route[i + 1:]
@@ -230,27 +234,29 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                     # Inline charger allocation
                     station_name = next_station['Station']
                     capacity = charging_info[station_name]['capacity']
-                    num_chargers = charging_info[station_name]['count']
                     charge_duration_min = 0 if energy_needed == 0 else energy_needed / capacity * 60
-                    charge_end = arrival_time + timedelta(minutes=charge_duration_min + 5)
+                    slot_start = round_to_previous_slot(arrival_time)
+                    slot_end = round_to_next_slot(arrival_time + timedelta(minutes=charge_duration_min + 5))
+
 
                     allocated = False
                     for charger_num, events in simulated_events[station_name].items():
-                        overlap = any(
-                            not (charge_end <= e['start_time'] or arrival_time >= e['end_time'])
-                            for e in events
-                        )
+                        overlap = [
+                            e for e in events
+                            if not (slot_end <= e['start_time'] or slot_start >= e['end_time'])
+                        ]
+
                         if not overlap:
                             events.append({
-                                'start_time': arrival_time,
-                                'end_time': charge_end,
+                                'start_time': slot_start,
+                                'end_time': slot_end,
                                 'service': service['Service Name'],
                                 'bus_name': bus_name
                             })
 
                             charging_event = {
-                                'start_time': arrival_time,
-                                'end_time': charge_end,
+                                'start_time': slot_start,
+                                'end_time': slot_end,
                                 'service': service['Service Name'],
                                 'station': station_name,
                                 'bus_name': bus_name,
@@ -266,8 +272,8 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                                 "Station Name": station_name,
                                 "Bus Name": bus_name,
                                 "Charger #": charger_num,
-                                "Charge Start": arrival_time.strftime("%H:%M"),
-                                "Charge End": charge_end.strftime("%H:%M"),
+                                "Slot Start": slot_start.strftime("%H:%M"),
+                                "Slot End": slot_end.strftime("%H:%M"),
                                 "Battery % on Arrival": f"{charging_event['battery_before_pct']:.1f}%",
                                 "Battery % After Charging": f"{charging_event['battery_after_pct']:.1f}%",
                                 "Battery After Charging (kWh)": round(charging_event['battery_after_kwh'], 2)
@@ -276,18 +282,36 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                             charging_events.append(charging_event)
                             allocation_rows.append(allocation_row)
                             allocated = True
+                            departure_time=slot_end
                             break
-
+                    
                     if not allocated:
+                        for o in overlap:
+                            existing_slot = f"{o['start_time'].strftime('%H:%M')} - {o['end_time'].strftime('%H:%M')}"
+                            new_slot = f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
+
+                            st.error(f"""
+                            ❌ System Alert Overlap Detected! 
+                            
+                            Station Name:**{station_name}**  
+                            Service Occupying Slot:       **{o['bus_name']}** ⏱️ **`{existing_slot}`**  
+                            Service to be Allocated:      **{bus_name}** ⏱️ **`{new_slot}`**
+                            """)
                         return None, None, None,None, False
-        # with open('logs.txt', 'a') as log_file:
-        #     log_file.write(f"Network: {net_name}\n")
-        #     log_file.write(f"Services: {', '.join(services_df["Service Name"])}\n")
-        #     log_file.write(f"Tolerance: {tolerance}%\n")
-        #     log_file.write(f"Bus Schedule:\n{json.dumps(bus_schedule, indent=2)}\n")
-        #     log_file.write(f"Allocations:\n{json.dumps(allocation_rows, indent=2)}\n")
-        #     log_file.write(f"Success: {True}\n")
-        #     log_file.write("\n")
+                bus_schedule.append({
+                'service': service['Service Name'],
+                'bus_name': bus_name,
+                'station': next_station['Station'],
+                'arrival': arrival_time.strftime("%H:%M"),
+                'departure': departure_time.strftime("%H:%M"),
+                'distance_from_prev_km': round(dist_km, 2),
+                'battery_remaining_kwh': round(battery_remaining, 2)
+                })
+                
+                if next_station==route[-1]:
+                    bus_schedule[-1]["departure"] = "--"
+                    
+        
     return bus_schedule, charging_events, pd.DataFrame(allocation_rows), simulated_events, True
 
 
@@ -410,22 +434,23 @@ st.markdown('<div class="centered-header">EV Network Planning & Simulation Tool<
 
 st.sidebar.title("Save / Load")
 
-user_id = st.sidebar.text_input("User ID", value="1")
+USER_ID = st.sidebar.text_input("User ID", value="1")
 
 if st.sidebar.button("💾 Save Session"):
-    save_session_to_mongo(user_id)
+    save_session_to_mongo(USER_ID)
 
 if st.sidebar.button("📥 Load Session"):
-    load_session_from_mongo(user_id)
+    load_session_from_mongo(USER_ID)
+
+if "station_type_choice" not in st.session_state:
+            st.session_state.station_type_choice = "Charging Station"
 
 
-
-
-tabs = st.tabs(["Charging Station", "Service", "EV Network"])
+tabs = st.tabs(["Charging Station/Bus Station", "Service", "EV Network"])
 
 # --- Charging Station Screen ---
 with tabs[0]:
-    st.header("Charging Station")
+    st.header("Charging Station/Bus Station")
     search = st.text_input("Search Station by Name")
     cs_df = st.session_state.charging_stations.copy()
     cs_df.drop(columns=["Charging Events"], inplace=True)
@@ -433,64 +458,74 @@ with tabs[0]:
         cs_df = cs_df[cs_df['Station Name'].str.contains(search, case=False)]
     st.dataframe(cs_df, use_container_width=True)
     
-    st.subheader("🔋 Charging Demand Summary (All Networks)")
-
-    all_events = []
-    for _, net in st.session_state.networks.iterrows():
-        events = net.get('Charging Events', [])
-        all_events.extend(events)
-
-    if all_events:
-        df = pd.DataFrame(all_events)
-        cs_df = st.session_state.charging_stations.copy()
-        df['Duration_Hours'] = df['energy_to_charge'] / df['station'].map({
-            row['Station Name']: row['Charging Capacity (kW)']
-            for _, row in cs_df.iterrows()
-        })
-
-        bus_counts = df.groupby('station')['bus_name'].nunique().rename("Buses Charged")
-        total_kwh = df.groupby('station')['energy_to_charge'].sum().rename("Total Charge (kWh)")
-        hours_util = df.groupby('station')['Duration_Hours'].sum().rename("Hours Utilized")
-
-        summary_df = pd.concat([bus_counts, total_kwh, hours_util], axis=1).reset_index().rename(columns={'station': 'Station Name'})
-
-        # Join to get number of chargers
-        summary_df = summary_df.merge(cs_df[['Station Name', 'Number of Chargers']], on='Station Name', how='left')
-        summary_df['Utilization (%)'] = (summary_df['Hours Utilized'] / (16 * summary_df['Number of Chargers'])) * 100
-        summary_df['Utilization (%)'] = summary_df['Utilization (%)'].round(2)
-
-        st.dataframe(summary_df[['Station Name', 'Buses Charged', 'Total Charge (kWh)', 'Hours Utilized', 'Utilization (%)']],
-                    use_container_width=True)
-    else:
-        st.info("No charging data available from networks yet.")
-
+    
     col1,col2= st.columns(2)
     with col1:
-        st.subheader("Add Charging Station")
-        with st.form("add_station"):
-            name = st.text_input("Station Name", key="new_cs_name")
-            city = st.text_input("City", key="new_cs_city")
-            lat = st.number_input("Latitude", format="%.6f", key="new_cs_lat")
-            lon = st.number_input("Longitude", format="%.6f", key="new_cs_lon")
-            cap = st.number_input("Charging Capacity (kW)", min_value=0, key="new_cs_cap")
-            num = st.number_input("Number of Chargers", min_value=1, step=1, key="new_cs_num")
-            if st.form_submit_button("Add Station"):
-                st.session_state.charging_stations = pd.concat([
-                    st.session_state.charging_stations,
-                    pd.DataFrame([{
-                        'Station Name': name,
-                        'City': city,
-                        'Latitude': lat,
-                        'Longitude': lon,
-                        'Charging Capacity (kW)': cap,
-                        'Number of Chargers': num,
-                        'Charging Events': {}
-                    }])
-                ], ignore_index=True)
-                st.success(f"Station '{name}' added.")
+        st.subheader("Add  Station")
+        if "form_step" not in st.session_state:
+             st.session_state.form_step = 0
+        
+        with st.form("dynamic_form"):
+            if st.session_state.form_step == 0:
+                # Step 1: Choose station type
+                selected_type=st.radio("Choose station type", ["Charging Station", "Bus Station"])
+                
+                next_step = st.form_submit_button("Next")
+                if next_step:
+                    st.session_state.station_type_choice = selected_type
+                    st.session_state.form_step = 1
+                    st.rerun()
+
+            elif st.session_state.form_step == 1:
+                # Step 2: Fill station details
+                station_type = st.session_state.station_type_choice
+                name = st.text_input("Station Name")
+                lat = st.number_input("Latitude", format="%.6f")
+                lon = st.number_input("Longitude", format="%.6f")
+
+                if station_type == "Charging Station":
+                    cap = st.number_input("Charging Capacity (kW)", min_value=0)
+                    num = st.number_input("Number of Chargers", min_value=1, step=1)
+                st.write(station_type)
+
+                space, column1, column2 = st.columns([16,4,3])
+                with column1:
+                    submit = st.form_submit_button("Add Station")
+                with column2:
+                    cancel = st.form_submit_button("Cancel")
+
+                if submit:
+                    if station_type == "Charging Station":
+                        st.session_state.charging_stations = pd.concat([
+                            st.session_state.charging_stations,
+                            pd.DataFrame([{
+                                'Station Name': name,
+                                'Latitude': lat,
+                                'Longitude': lon,
+                                'Charging Capacity (kW)': cap,
+                                'Number of Chargers': num
+                            }])
+                        ], ignore_index=True)
+                        st.write("charging station sfdjjdsfsdkjfhjhskfhdsj")
+                    else:
+                        st.session_state.bus_stations.append({
+                            'Station': name,
+                            'Latitude': lat,
+                            'Longitude': lon,
+                            'ChargeFlag': False,  
+                            'BusStation': True
+                        })
+                    st.success(f"{station_type} '{name}' added!")
+                    st.session_state.form_step = 0
+                    st.rerun()
+
+                if cancel:
+                    st.session_state.form_step = 0
+                    st.rerun()
+
     with col2:
+        st.subheader("Edit Station")
         if not cs_df.empty:
-            st.subheader("Edit Charging Station")
             selected = st.selectbox("Select Station to Edit", cs_df['Station Name'].tolist())
             station = st.session_state.charging_stations[
                 st.session_state.charging_stations['Station Name'] == selected
@@ -532,7 +567,6 @@ with tabs[1]:
             bus_count = st.number_input("Number of Buses", min_value=1, value=1, step=1, key="new_bus_count")
             
 
-            #interval = st.selectbox("Departure Interval (minutes)", [15, 30, 45, 60], key="new_dep_interval")
             start_date=st.date_input("Start Date")
             start_time=st.time_input("Start Time")
             start_time = datetime.combine(start_date,start_time)
@@ -542,13 +576,9 @@ with tabs[1]:
 
     with c2:
     # Buttons to add stations to route (outside form)
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("➕ Add New Bus Station to Route"):
-                st.session_state.show_add_bus_station_modal = True
-                st.session_state.show_add_bus_station_modal_dismissed=False
+        col2, col3 = st.columns(2)
         with col2:
-            if st.button("➕ Add Existing Bus Station to Route"):
+            if st.button("➕ Add Bus Station to Route"):
                 st.session_state.show_add_ext_busStation_modal = True
                 st.session_state.show_add_ext_busStation_modal_dismissed=False
         with col3:
@@ -556,62 +586,6 @@ with tabs[1]:
                 st.session_state.show_add_charger_station_modal = True
                 st.session_state.show_add_charger_station_modal_dismissed=False
         
-
-    # Modal for adding Bus Station (manual input)
-        if st.session_state.get("show_add_bus_station_modal", False) and not st.session_state.get("show_add_bus_station_modal_dismissed", False):
-            @st.dialog("Add Bus Station")
-            def bus_station_modal():
-                st_name = st.text_input("Station Name", key="bus_modal_name")
-                lat = st.number_input("Latitude", format="%.6f", key="bus_modal_lat")
-                lon = st.number_input("Longitude", format="%.6f", key="bus_modal_lon")
-                charge = st.checkbox("Charging Allowed", key="bus_modal_charge")
-                is_bus = True  # since this is bus station modal, always True
-
-                if st.button("Add", key="bus_modal_add"):
-                    existing_names = [s['Station'] for s in st.session_state.bus_stations]
-                    if st_name in existing_names:
-                        st.error(f"A bus station named '{st_name}' already exists. Please use a different name.")
-                    else:
-                        st.session_state.temp_route.append({
-                            "Station": st_name,
-                            "Latitude": lat,
-                            "Longitude": lon,
-                            "ChargeFlag": charge,
-                            "BusStation": is_bus
-                        })
-                        
-                        st.session_state.bus_stations.append({
-                            "Station": st_name,
-                            "Latitude": lat,
-                            "Longitude": lon,
-                            "ChargeFlag": charge,
-                            "BusStation": is_bus
-                        })
-                        if(charge):
-                            st.session_state.charging_stations = pd.concat([
-                                st.session_state.charging_stations,
-                                pd.DataFrame([{
-                                    'Station Name': st_name,
-                                    'City': st_name,
-                                    'Latitude': lat,
-                                    'Longitude': lon,
-                                    'Charging Capacity (kW)': 0,
-                                    'Number of Chargers': 0
-                                }])
-                            ], ignore_index=True)
-                        st.success(f"Station '{st_name}' added.")
-
-                        st.session_state.show_add_bus_station_modal = False
-                        st.rerun() 
-
-                if st.button("Cancel", key="bus_modal_cancel"):
-                    st.session_state.show_add_bus_station_modal = False
-                    st.rerun()
-            st.session_state.show_add_bus_station_modal_dismissed = True
-            bus_station_modal()
-            
-        #Modal for adding Bus Station from existing stations
-        # Modal for adding Bus Station from existing stations
         if st.session_state.get("show_add_ext_busStation_modal", False) and not st.session_state.get("show_add_ext_busStation_modal_dismissed", False):
             @st.dialog("Add Existing Bus Station")
             def bus_station_modal():
@@ -744,8 +718,8 @@ with tabs[1]:
                 result = getDistanceAndDurationGmaps(origin, destination)
                 distance_time_matrix.append(result)
             st.write(distance_time_matrix)
-            total_distance = sum([d["distance_m"] for d in distance_time_matrix]) / 1000
-            total_duration = sum([d["duration_s"] for d in distance_time_matrix]) / 60
+            total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
+            total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
 
             st.session_state.pending_service={
                 'Service Name': svc_name,
@@ -808,7 +782,7 @@ with tabs[1]:
 
         # Compute distances and times
         coords = list(zip(route['Latitude'], route['Longitude']))
-        start_idx = route[route['BusStation'] == True].index.min()
+        start_idx = route[route['BusStation']].index.min()
         start_coord = coords[start_idx]
 
         distances = [i['distance_text'] for i in svc['Distance Time Matrix']]
@@ -838,8 +812,8 @@ with tabs[1]:
                 destination = (st.session_state.temp_route[i + 1]['Latitude'], st.session_state.temp_route[i + 1]['Longitude'])
                 result = getDistanceAndDurationGmaps(origin, destination)
                 distance_time_matrix.append(result)
-            total_distance = sum([d["distance_m"] for d in distance_time_matrix]) / 1000
-            total_duration = sum([d["duration_s"] for d in distance_time_matrix]) / 60
+            total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
+            total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
             st.session_state.services.at[idx, 'Route Data'] = st.session_state.temp_route.copy()
             st.session_state.services.at[idx, 'Distance (km)'] = total_distance
             st.session_state.services.at[idx, 'Distance Time Matrix'] = distance_time_matrix
@@ -860,7 +834,7 @@ with tabs[1]:
 
             path_segments = get_directions_path(route_data_hash,st.session_state.route_data_cache)
             m = build_folium_map(route_data, path_segments=path_segments)
-            data=st_folium(m, width=700, height=500)
+            m_data=st_folium(m, width=700, height=500)
 
                 
             
@@ -889,9 +863,8 @@ with tabs[2]:
 
 
             bus_schedule,charging_events,alloc_df,simulated_events,success = simulate_bus_trips( services_subset, tol,charging_stations_df=st.session_state.charging_stations)
-            #TODO::fix the run_network_allocation function to accept services_subset and tol the code was changed so do a runthrough of working 
             if not success:
-
+                
                 st.error("❌ Allocation failed. Network creation rolled back.")
                 
             else:
@@ -906,7 +879,7 @@ with tabs[2]:
                         'Allocations': alloc_df,
                         'Bus Schedule': bus_schedule,
                         'Logs': [],
-                        'Charging Events': charging_events  # NEW: store for display
+                        'Charging Events': charging_events  
                     }])
                 ], ignore_index=True)
                 st.rerun()
@@ -931,10 +904,7 @@ with tabs[2]:
         valid_arrival_df = valid_arrival_df.sort_values(by='arrival')
         valid_arrival_df['arrival'] = valid_arrival_df['arrival'].dt.strftime('%H:%M')
         sorted_bus_df = pd.concat([invalid_arrival_df, valid_arrival_df], ignore_index=True)
-        st.dataframe(sorted_bus_df)
-        # st.subheader(f"Bus Schedule for '{selected_net}'")
 
-        # st.write(bus_schedule)
 
         st.subheader(f"Charging Slot Allocation for '{selected_net}'")
 
@@ -956,56 +926,90 @@ with tabs[2]:
             )
 
             st.dataframe(alloc_df_display)
-            
-            st.subheader("Charger Allocation")
-            station_names = sorted(set(event['station'] for event in charging_events))
-            selected = st.selectbox("Select Station for Allocation View", station_names)
-            rows = []
-            charging_event_per_station = [event for event in charging_events if event['station'] == selected]
-            total_chargers = st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Number of Chargers"]
-            for charger_num in range(1, total_chargers + 1):
-                charger_key = str(charger_num)
-                events = [e for e in charging_event_per_station if str(e.get('charger_num')) == charger_key]
-
-                if not events:
-                    # Add a dummy row with minimal span for display
-                    rows.append({
-                        "Charger": f"Charger {charger_key}",
-                        "Start": datetime.now(),
-                        "Finish": datetime.now(),
-                        "Service": "Unused"
-                    })
-                else:
-                    for event in events:
-                            rows.append({
-                            "Charger": f"Charger {charger_key}",
-                            "Start": event["start_time"],
-                            "Finish": event["end_time"],
-                            "Service": event.get("service", "Unknown")
-                        })
-                df = pd.DataFrame(rows)
-
-                    # Create Gantt chart
-                if df.empty:
-                    st.write("No charging events to display.")
-                else:
-                    fig = px.timeline(
-                        df,
-                        x_start="Start",
-                        x_end="Finish",
-                        y="Charger",
-                        color="Service",
-                        title="Charging Station Gantt Chart",
-                    )
-
-        # Reverse Y-axis so Charger 1 is at the top
-            fig.update_yaxes(autorange="reversed")
-
-            st.plotly_chart(fig)
-
-        
         else:
-            st.info("No allocation found for this network.")
+            st.info("No allocation found for this network.")   
+         
+         
+        st.subheader("🔋 Charging Demand Summary (All Networks)")
+
+        all_events=[]
+        all_events = net_df.get('Charging Events', []).iloc[0]
+        if   all_events:
+            df = pd.DataFrame(all_events)
+            cs_df = st.session_state.charging_stations.copy()
+            df['Duration_Hours'] = df['energy_to_charge'] / df['station'].map({
+                row['Station Name']: row['Charging Capacity (kW)']
+                for _, row in cs_df.iterrows()
+            })
+
+            bus_counts = df.groupby('station')['bus_name'].nunique().rename("Buses Charged")
+            total_kwh = df.groupby('station')['energy_to_charge'].sum().rename("Total Charge (kWh)")
+            hours_util = df.groupby('station')['Duration_Hours'].sum().rename("Hours Utilized")
+
+            summary_df = pd.concat([bus_counts, total_kwh, hours_util], axis=1).reset_index().rename(columns={'station': 'Station Name'})
+
+            # Join to get number of chargers
+            summary_df = summary_df.merge(cs_df[['Station Name', 'Number of Chargers']], on='Station Name', how='left')
+            summary_df['Utilization (%)'] = (summary_df['Hours Utilized'] / (16 * summary_df['Number of Chargers'])) * 100
+            summary_df['Utilization (%)'] = summary_df['Utilization (%)'].round(2)
+
+            st.dataframe(summary_df[['Station Name', 'Buses Charged', 'Total Charge (kWh)', 'Hours Utilized', 'Utilization (%)']],
+                        use_container_width=True)
+        else:
+            st.info("No charging data available from networks yet.")
+        
+   
+            
+        st.subheader("Charger Allocation")
+        station_names = sorted({event['station'] for event in charging_events})
+        selected = st.selectbox("Select Station for Allocation View", station_names)
+        rows = []
+        charging_event_per_station = [event for event in charging_events if event['station'] == selected]
+        total_chargers = st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Number of Chargers"]
+        for charger_num in range(1, total_chargers + 1):
+            charger_key = str(charger_num)
+            events = [e for e in charging_event_per_station if str(e.get('charger_num')) == charger_key]
+
+            if not events:
+                # Add a dummy row with minimal span for display
+                rows.append({
+                    "Charger": f"Charger {charger_key}",
+                    "Start": datetime.now(),
+                    "Finish": datetime.now(),
+                    "Service": "Unused"
+                })
+            else:
+                for event in events:
+                        rows.append({
+                        "Charger": f"Charger {charger_key}",
+                        "Start": event["start_time"],
+                        "Finish": event["end_time"],
+                        "Service": event.get("service", "Unknown")
+                    })
+            df = pd.DataFrame(rows)
+
+                # Create Gantt chart
+            if df.empty:
+                st.write("No charging events to display.")
+            else:
+                fig = px.timeline(
+                    df,
+                    x_start="Start",
+                    x_end="Finish",
+                    y="Charger",
+                    color="Service",
+                    title="Charging Station Gantt Chart",
+                )
+        
+        # Reverse Y-axis so Charger 1 is at the top
+        fig.update_yaxes(autorange="reversed")
+        fig.update_traces(marker_line_color='black', marker_line_width=1)
+
+
+        st.plotly_chart(fig)
+
+        st.dataframe(sorted_bus_df)
+
 
     if not st.session_state.networks.empty:
         st.subheader("✏️ Edit Existing Network")
@@ -1036,6 +1040,9 @@ with tabs[2]:
             time.sleep(2)
             msg_box.empty()
             st.rerun()
+    
+        
+
             
         
         
