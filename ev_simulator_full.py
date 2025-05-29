@@ -136,7 +136,7 @@ def init_session_state():
     if "pending_service" not in st.session_state:
         st.session_state.pending_service = pd.DataFrame(columns=[
             'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
-            'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time'
+            'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time','Buffer Times'
         ])
     if "temp_route" not in st.session_state:
         st.session_state.temp_route = []
@@ -214,11 +214,12 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
         dep_intervals = service.get('Departure Intervals')
         bus_capacity_kwh = service['Bus Charging Capacity (kW)']
         mileage = service['Mileage (km/kWh)']
+        buffer_times = service.get('Buffer Times', [0] * bus_count)
 
         prev_min = start_min
 
         for bus_num in range(bus_count):
-            dep_offset = dep_intervals[bus_num]
+            dep_offset = dep_intervals[bus_num] + buffer_times[bus_num] 
             departure_min = prev_min + dep_offset
             prev_min = departure_min
 
@@ -573,15 +574,20 @@ with tabs[1]:
         st.subheader("Add Service")
         with st.form("add_service"):
             svc_name = st.text_input("Service Name", key="new_svc_name")
-            svc_cap = st.number_input("Bus Charging Capacity (kW)", min_value=0, key="new_svc_cap")
-            mileage = st.number_input("Mileage (km/kWh)", min_value=0.0, format="%.2f", key="new_svc_mileage")
+            svc_cap = st.number_input("Bus Charging Capacity (kW)", min_value=1, key="new_svc_cap")
+            mileage = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="new_svc_mileage")
             bus_count = st.number_input("Number of Buses", min_value=1, value=1, step=1, key="new_bus_count")
-            
+            start_time=st.time_input("Start Time")  
 
-            start_time=st.time_input("Start Time")
+            add_interval_col, add_buffer_col, submit_col = st.columns([4, 4, 2])
+            with add_interval_col:
+                add_interval = st.form_submit_button("Set Departure Intervals")
 
+            with add_buffer_col:
+                add_buffer = st.form_submit_button("Set Buffer Time")
+            with submit_col:
+                submitted = st.form_submit_button("Add Service")
 
-            submitted = st.form_submit_button("Add Service")
 
     with c2:
     # Buttons to add stations to route (outside form)
@@ -726,59 +732,88 @@ with tabs[1]:
                 destination = (st.session_state.temp_route[i + 1]['Latitude'], st.session_state.temp_route[i + 1]['Longitude'])
                 result = getDistanceAndDurationGmaps(origin, destination)
                 distance_time_matrix.append(result)
-            st.write(distance_time_matrix)
             total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
             total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
 
-            st.session_state.pending_service={
-                'Service Name': svc_name,
-                'Bus Charging Capacity (kW)': svc_cap,
-                'Mileage (km/kWh)': mileage,
-                'Route Data': st.session_state.temp_route.copy(),
-                'Number of Buses': bus_count,
-                'Distance (km)': total_distance,
-                'Duration (mins)': total_duration,
-                'Distance Time Matrix': distance_time_matrix,
-                'Start Time': start_time
-            }
-            st.session_state.temp_route = []  
-            st.session_state.show_interval_modal= True
-            st.session_state.show_interval_modal_dismissed=False
+            st.session_state.pending_service['Service Name'] = svc_name
+            st.session_state.pending_service['Bus Charging Capacity (kW)'] = svc_cap
+            st.session_state.pending_service['Mileage (km/kWh)'] = mileage
+            st.session_state.pending_service['Number of Buses'] = bus_count
+            st.session_state.pending_service['Route Data'] = st.session_state.temp_route
+            st.session_state.pending_service['Start Time'] = start_time
+            st.session_state.pending_service['Distance (km)'] = total_distance
+            st.session_state.pending_service['Duration (mins)'] = total_duration
+            st.session_state.pending_service['Distance Time Matrix'] = distance_time_matrix
+            
+            st.session_state.temp_route = []
+            st.write(st.session_state.pending_service)
+            if st.session_state.pending_service['Departure Intervals'] is None:
+                st.session_state.pending_service['Departure Intervals'] = [0] * (bus_count - 1)
+            if st.session_state.pending_service['Buffer Times'] is None:
+                st.session_state.pending_service['Buffer Times'] = [0] * bus_count
+            st.session_state.services = pd.concat([
+                st.session_state.services,
+                pd.DataFrame([st.session_state.pending_service])
+            ], ignore_index=True)
+            st.success(f"Service '{svc_name}' added with {bus_count} buses.")
+            st.session_state.pending_service = {}   
+            st.rerun()
+            
         else:
             st.error("Please add at least one station.")
+            
+    if add_interval:
+        if bus_count > 1:
+            st.session_state.show_interval_modal = True
+            st.session_state.show_interval_modal_dismissed = False
+        else:
+            st.error("At least 2 buses are required to set intervals.")
+    if add_buffer:
+        if bus_count > 0:
+            st.session_state.show_buffer_modal = True
+            st.session_state.show_buffer_modal_dismissed = False
+        else:
+            st.error("At least 1 bus is required to set buffer times.")
     
     if st.session_state.get('show_interval_modal', False) and not st.session_state.get('show_interval_modal_dismissed', False):
         @st.dialog("Set Departure Intervals")
         def interval_modal():
-            bus_count = st.session_state.pending_service.get("Number of Buses", 1)
             intervals = []
-            for i in range(bus_count - 1):
-                val = st.number_input(f"Interval between Bus {i+1} and {i+2} (min)", min_value=0, key=f"modal_interval_{i}")
+            for i in range(1,bus_count ):
+                val = st.number_input(f"Interval between Bus {i} and {i+1} (min)", min_value=0, key=f"modal_interval_{i}",value=st.session_state.pending_service.get('Departure Intervals', [0] * (bus_count))[i])
                 intervals.append(val)
-
             if st.button("Confirm & Save"):
-                data = st.session_state.pending_service.copy()
-                intervals.insert(0, 0) 
-                data['Departure Intervals'] = intervals
-                st.session_state.services = pd.concat([
-                    st.session_state.services,
-                    pd.DataFrame([data])
-                ], ignore_index=True)
-                st.success(f"Service '{data['Service Name']}' added.")
-                st.session_state.pending_service = {}
+                intervals.insert(0, 0)
+                st.session_state.pending_service['Departure Intervals'] = intervals
                 st.session_state.show_interval_modal = False
                 st.rerun()
 
             if st.button("Cancel"):
-                st.session_state.temp_route = st.session_state.pending_service.get("Route Data", [])
-                st.session_state.pending_service = {}
                 st.session_state.show_interval_modal = False
                 st.rerun()
-            st.session_state.show_interval_modal_dismissed = True
+        st.session_state.show_interval_modal_dismissed = True
         interval_modal()
 
-    
-            
+    if st.session_state.get("show_buffer_modal", False) and not st.session_state.get("show_buffer_modal_dismissed", False):
+        @st.dialog("Set Buffer Tolerance")
+        def buffer_modal():
+            buffers=[]
+            for i in range(bus_count):
+                buffer = st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}", value=st.session_state.pending_service.get('Buffer Times', [0] * bus_count)[i])
+                buffers.append(buffer)
+            if st.button("Confirm & Save"):
+
+                st.session_state.pending_service['Buffer Times'] = buffers
+                st.session_state.show_buffer_modal = False
+                st.session_state.show_buffer_modal_dismissed = True
+                st.rerun()
+
+            if st.button("Cancel"):
+                st.session_state.show_buffer_modal = False
+                st.rerun()
+        st.session_state.show_buffer_modal_dismissed = True 
+        buffer_modal()
+
         
 
     st.subheader("Show Service Route & Distances")
