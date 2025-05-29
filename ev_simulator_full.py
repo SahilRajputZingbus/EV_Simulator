@@ -5,22 +5,24 @@ import pandas as pd
 import googlemaps
 import polyline
 import plotly.express as px 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,time
 from pymongo import MongoClient
 import json
 import hashlib
-import time
+import math
 
 st.set_page_config(page_title="EV Network Planning", layout="wide")
 
 gmaps = googlemaps.Client(key="AIzaSyCcdyw_-0olqzOu9vSdDQBgZvaTw8GGLbc")
 
-# --- MongoDB Setup ---
 MONGO_URI = "mongodb+srv://sahilrajput:NM09NKfilkALYovi@cluster0.cybby1b.mongodb.net/"
-client = MongoClient(MONGO_URI)
 
-db = client["ev_simulator"]
-collection = db["sessions"]  
+@st.cache_resource
+def get_mongo_client():
+    return MongoClient(MONGO_URI)
+    
+db = get_mongo_client()["ev_simulator"]
+collection = db["sessions"]
 
 
 STATE_KEYS = [
@@ -28,14 +30,40 @@ STATE_KEYS = [
     "networks", "pending_service", "temp_route", "route_data_cache"
 ]
 
+def make_serializable(obj):
+    if isinstance(obj, pd.DataFrame):
+        # First convert to list of dicts
+        records = obj.to_dict(orient="records")
+        # Then recursively serialize each value inside
+        return [make_serializable(row) for row in records]
+    
+    elif isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    
+    elif isinstance(obj, time):
+        return obj.strftime("%H:%M:%S")
+    
+    elif isinstance(obj, dict):
+        return {k: make_serializable(v) for k, v in obj.items()}
+    
+    elif isinstance(obj, list):
+        return [make_serializable(v) for v in obj]
+    
+    
+    else:
+        return obj
+
 def clean_session_state():
     cleaned = {}
     for key in STATE_KEYS:
         val = st.session_state.get(key)
-        if isinstance(val, pd.DataFrame):
-            cleaned[key] = val.to_dict(orient="records")
-        else:
-            cleaned[key] = val
+        cleaned[key] = make_serializable(val)
+        with open("logs.txt", "a") as f:
+            f.write(f"{key} :\n{(type(cleaned[key]))}\n\n")
+
     return cleaned
 
 def load_session_state(data):
@@ -44,7 +72,7 @@ def load_session_state(data):
 
         if key == "charging_stations":
             st.session_state[key] = pd.DataFrame(val, columns=[
-                'Station Name', 'City', 'Charging Capacity (kW)', 'Number of Chargers', 'Charging Events','Latitude','Longitude'
+                'Station Name', 'Charging Capacity (kW)', 'Number of Chargers','Latitude','Longitude'
             ]) if isinstance(val, list) else pd.DataFrame()
         
         elif key == "services":
@@ -56,28 +84,9 @@ def load_session_state(data):
 
         elif key == "networks":
             st.session_state[key] = pd.DataFrame(val, columns=[
-                'Network Name', 'Tolerance (%)', 'Services', 'Start Times',
-                'Buffer Times', 'Status', 'Allocations', 'Logs'
+                'Network Name', 'Tolerance (%)', 'Services',  'Status', 'Allocations', 'Logs', 'Charging Events','Bus Schedule'
             ]) if isinstance(val, list) else pd.DataFrame()
 
-        elif key == "pending_service":
-            st.session_state[key] = pd.DataFrame(val, columns=[
-                'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
-                'Number of Buses', 'Departure Intervals', 'Route Data',
-                'Start Time', 'Distance (km)', 'Duration (mins)', 'Distance Time Matrix'
-            ]) if isinstance(val, list) else pd.DataFrame()
-
-        elif key == "networks":
-            st.session_state[key] = pd.DataFrame(val, columns=[
-                'Network Name', 'Tolerance (%)', 'Services', 'Start Times',
-                'Buffer Times', 'Status', 'Allocations', 'Logs'
-            ]) if isinstance(val, list) else pd.DataFrame()
-
-        elif key == "pending_service":
-            st.session_state[key] = pd.DataFrame(val, columns=[
-                'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
-                'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time','Distance (km)', 'Duration (mins)', 'Distance Time Matrix'
-            ]) if isinstance(val, list) else pd.DataFrame()
 
         else:
             st.session_state[key] = val if val is not None else ({} if key == "route_data_cache" else [])
@@ -92,6 +101,8 @@ def save_session_to_mongo(user_id="default_user"):
         )
         st.success("Session saved to MongoDB.")
     except Exception as e:
+        with open("error_log.txt", "a") as f:
+            f.write(f"{datetime.now()}: Failed to save session for user {user_id}: {str(e)}\n")
         st.error(f"Failed to save session: {e}")
         
 def load_session_from_mongo(user_id="default_user"):
@@ -110,7 +121,7 @@ def init_session_state():
         st.session_state.bus_stations = []
     if "charging_stations" not in st.session_state:
         st.session_state.charging_stations = pd.DataFrame(columns=[
-            'Station Name', 'City', 'Charging Capacity (kW)', 'Number of Chargers', 'Charging Events','Latitude','Longitude'
+            'Station Name', 'Charging Capacity (kW)', 'Number of Chargers','Latitude','Longitude'
         ])
     if "services" not in st.session_state:
         st.session_state.services = pd.DataFrame(columns=[
@@ -119,7 +130,7 @@ def init_session_state():
         ])
     if "networks" not in st.session_state:
         st.session_state.networks = pd.DataFrame(columns=[
-            'Network Name', 'Tolerance (%)', 'Services', 'Start Times', 'Buffer Times',
+            'Network Name', 'Tolerance (%)', 'Services',
             'Status', 'Allocations', 'Logs'
         ])
     if "pending_service" not in st.session_state:
@@ -132,7 +143,15 @@ def init_session_state():
     if "route_data_cache" not in st.session_state:
         st.session_state.route_data_cache = {}
 init_session_state()
-    
+
+def minutes_to_str(m):
+    m = m % (24 * 60)  
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+def get_slot_range(start_min, duration_min):
+    start_slot = (start_min // 15) * 15
+    end_slot = math.ceil((start_min + duration_min) / 15) * 15
+    return start_slot, end_slot 
 
 def round_to_previous_slot(dt):
     """Rounds datetime down to nearest 15-minute slot."""
@@ -148,13 +167,22 @@ def round_to_next_slot(dt):
     return dt.replace(minute=minute, second=0, microsecond=0)
 
 
+def to_24h_datetime(mins):
+    """Returns a fake datetime starting from 2000-01-01 + minutes."""
+    return datetime(2000, 1, 1) + timedelta(minutes=mins)
+def to_24h_reference(time_obj):
+    """Converts 'HH:MM' string to minutes since midnight."""
+    if isinstance(time_obj, str):
+        time_obj = datetime.strptime(time_obj, "%H:%M")
+    return time_obj.hour * 60 + time_obj.minute
+
 
 def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
     charging_events = []
     bus_schedule = []
     allocation_rows = []
 
-    # Charger station info
+    # Charger info per station
     charging_info = {
         row['Station Name']: {
             'count': row['Number of Chargers'],
@@ -163,157 +191,141 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
         for _, row in charging_stations_df.iterrows()
     }
 
-    # In-network-only simulated charger state
+    # Internal simulated allocation state (by 15-min slots)
     simulated_events = {
         station: {str(i + 1): [] for i in range(info['count'])}
         for station, info in charging_info.items()
     }
-    
-    
+
+
 
     for _, service in services_df.iterrows():
-        base_date = service['Start Time']
+        if isinstance(service['Start Time'], str):
+            time_str = service['Start Time']
+            time_str = time_str.split("T")[-1]  # removes date part if present
+            time_str = time_str[:5]             # takes only HH:MM
+            start_time = datetime.strptime(time_str, "%H:%M").time()
+        else:
+            start_time = service['Start Time']
+        start_min = start_time if isinstance(start_time, int) else start_time.hour * 60 + start_time.minute
         route = service['Route Data']
         dtm = service['Distance Time Matrix']
         bus_count = service.get('Number of Buses', 1)
         dep_intervals = service.get('Departure Intervals')
         bus_capacity_kwh = service['Bus Charging Capacity (kW)']
         mileage = service['Mileage (km/kWh)']
-        prev_time = base_date
-        
-        for bus_num in range(1, bus_count + 1):
-            
-            departure_time = prev_time + timedelta(minutes=dep_intervals[bus_num - 1])
-            prev_time = departure_time
-            battery_remaining = bus_capacity_kwh
-            bus_name = f"{service['Service Name']}-{departure_time.strftime('%H:%M')}"
-            
+
+        prev_min = start_min
+
+        for bus_num in range(bus_count):
+            dep_offset = dep_intervals[bus_num]
+            departure_min = prev_min + dep_offset
+            prev_min = departure_min
+
+            battery = bus_capacity_kwh
+            bus_name = f"{service['Service Name']}-{minutes_to_str(departure_min)}"
+
+            # First station entry
             bus_schedule.append({
                 'service': service['Service Name'],
                 'bus_name': bus_name,
                 'station': route[0]['Station'],
                 'arrival': "--",
-                'departure': base_date.strftime("%H:%M"),
+                'departure': minutes_to_str(departure_min),
                 'distance_from_prev_km': 0.0,
-                'battery_remaining_kwh': round(battery_remaining, 2)
+                'battery_remaining_kwh': battery
             })
+
             for i in range(len(route) - 1):
+                curr = route[i]
                 next_station = route[i + 1]
-
                 dist_km = dtm[i + 1]["distance_m"] / 1000
-                travel_time = timedelta(seconds=dtm[i + 1]["duration_s"])
+                travel_min = dtm[i + 1]["duration_s"] // 60
                 energy_used = dist_km / mileage
-                battery_remaining -= energy_used
-                arrival_time = departure_time + travel_time
-                departure_time = arrival_time
-
-                
-                
+                battery -= energy_used
+                arrival_min = departure_min + travel_min
+                departure_min = arrival_min
 
                 if next_station['ChargeFlag']:
                     remaining = route[i + 1:]
                     rem_dtm = dtm[i + 1:]
-                    next_charge_dist = 0
+                    next_dist = 0
                     for j in range(len(remaining) - 1):
-                        next_charge_dist += rem_dtm[j + 1]["distance_m"] / 1000
+                        next_dist += rem_dtm[j + 1]["distance_m"] / 1000
                         if remaining[j + 1]['ChargeFlag']:
                             break
 
-                    if next_station == route[-1]:
-                        required_energy = bus_capacity_kwh
-                        buffer = 0
-                    else:
-                        required_energy = next_charge_dist / mileage
-                        buffer = required_energy * (tolerance / 100)
+                    required = bus_capacity_kwh if next_station == route[-1] else next_dist / mileage
+                    buffer = 0 if next_station == route[-1] else required * (tolerance / 100)
+                    target = min(bus_capacity_kwh,required + buffer)    
+                    needed = max(target - battery, 0)
 
-                    target_energy = required_energy + buffer
-                    energy_needed = max(target_energy - battery_remaining, 0)
-                    battery_before = battery_remaining
-                    battery_remaining = min(bus_capacity_kwh, battery_remaining + energy_needed)
+                    charge_minutes = 0 if needed == 0 else math.ceil((needed / charging_info[next_station['Station']]['capacity']) * 60)
+                    start_slot, end_slot = get_slot_range(arrival_min, charge_minutes + 5)
 
-                    # Inline charger allocation
                     station_name = next_station['Station']
-                    capacity = charging_info[station_name]['capacity']
-                    charge_duration_min = 0 if energy_needed == 0 else energy_needed / capacity * 60
-                    slot_start = round_to_previous_slot(arrival_time)
-                    slot_end = round_to_next_slot(arrival_time + timedelta(minutes=charge_duration_min + 5))
-
-
                     allocated = False
+
                     for charger_num, events in simulated_events[station_name].items():
                         overlap = [
                             e for e in events
-                            if not (slot_end <= e['start_time'] or slot_start >= e['end_time'])
+                            if not (end_slot <= e['start'] or start_slot >= e['end'])
                         ]
-
                         if not overlap:
-                            events.append({
-                                'start_time': slot_start,
-                                'end_time': slot_end,
-                                'service': service['Service Name'],
-                                'bus_name': bus_name
-                            })
-
-                            charging_event = {
-                                'start_time': slot_start,
-                                'end_time': slot_end,
-                                'service': service['Service Name'],
+                            events.append({'start': start_slot, 'end': end_slot, 'bus': bus_name})
+                            charging_events.append({
                                 'station': station_name,
                                 'bus_name': bus_name,
-                                'arrival': arrival_time,
-                                'energy_to_charge': energy_needed,
-                                'battery_before_pct': battery_before / bus_capacity_kwh * 100,
-                                'battery_after_pct': battery_remaining / bus_capacity_kwh * 100,
-                                'battery_after_kwh': battery_remaining,
-                                'charger_num': charger_num,
-                            }
-
-                            allocation_row = {
+                                'arrival': minutes_to_str(arrival_min),
+                                'start_time': minutes_to_str(start_slot),
+                                'end_time': minutes_to_str(end_slot),
+                                'service': service['Service Name'],
+                                'energy_to_charge': needed,
+                                'battery_before_pct': battery / bus_capacity_kwh * 100,
+                                'battery_after_pct': (battery + needed) / bus_capacity_kwh * 100,
+                                'battery_after_kwh': min(battery + needed, bus_capacity_kwh),
+                                'charger_num': charger_num
+                            })
+                            allocation_rows.append({
                                 "Station Name": station_name,
                                 "Bus Name": bus_name,
                                 "Charger #": charger_num,
-                                "Slot Start": slot_start.strftime("%H:%M"),
-                                "Slot End": slot_end.strftime("%H:%M"),
-                                "Battery % on Arrival": f"{charging_event['battery_before_pct']:.1f}%",
-                                "Battery % After Charging": f"{charging_event['battery_after_pct']:.1f}%",
-                                "Battery After Charging (kWh)": round(charging_event['battery_after_kwh'], 2)
-                            }
-
-                            charging_events.append(charging_event)
-                            allocation_rows.append(allocation_row)
+                                "Slot Start": minutes_to_str(start_slot),
+                                "Slot End": minutes_to_str(end_slot),
+                                "Battery % on Arrival": f"{battery / bus_capacity_kwh * 100:.1f}%",
+                                "Battery % After Charging": f"{(battery + needed) / bus_capacity_kwh * 100:.1f}%",
+                                "Battery After Charging (kWh)": round(min(battery + needed, bus_capacity_kwh), 2)
+                            })
+                            battery = min(battery + needed, bus_capacity_kwh)
+                            departure_min = end_slot
                             allocated = True
-                            departure_time=slot_end
                             break
-                    
+
                     if not allocated:
                         for o in overlap:
-                            existing_slot = f"{o['start_time'].strftime('%H:%M')} - {o['end_time'].strftime('%H:%M')}"
-                            new_slot = f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
+                            existing_slot = f"{minutes_to_str(o['start'])} - {minutes_to_str(o['end'])}"
+                            new_slot = f"{minutes_to_str(start_slot)} - {minutes_to_str(end_slot)}"
 
                             st.error(f"""
                             ❌ System Alert Overlap Detected! 
                             
                             Station Name:**{station_name}**  
-                            Service Occupying Slot:       **{o['bus_name']}** ⏱️ **`{existing_slot}`**  
+                            Service Occupying Slot:       **{o['bus']}** ⏱️ **`{existing_slot}`**  
                             Service to be Allocated:      **{bus_name}** ⏱️ **`{new_slot}`**
                             """)
-                        return None, None, None,None, False
-                bus_schedule.append({
-                'service': service['Service Name'],
-                'bus_name': bus_name,
-                'station': next_station['Station'],
-                'arrival': arrival_time.strftime("%H:%M"),
-                'departure': departure_time.strftime("%H:%M"),
-                'distance_from_prev_km': round(dist_km, 2),
-                'battery_remaining_kwh': round(battery_remaining, 2)
-                })
-                
-                if next_station==route[-1]:
-                    bus_schedule[-1]["departure"] = "--"
-                    
-        
-    return bus_schedule, charging_events, pd.DataFrame(allocation_rows), simulated_events, True
+                        return None, None, None, None, False
 
+                bus_schedule.append({
+                    'service': service['Service Name'],
+                    'bus_name': bus_name,
+                    'station': next_station['Station'],
+                    'arrival': minutes_to_str(arrival_min),
+                    'departure': "--" if next_station == route[-1] else minutes_to_str(departure_min),
+                    'distance_from_prev_km': round(dist_km, 2),
+                    'battery_remaining_kwh': round(battery, 2)
+                })
+
+    return bus_schedule, charging_events, pd.DataFrame(allocation_rows), simulated_events, True
 
 
 
@@ -453,7 +465,6 @@ with tabs[0]:
     st.header("Charging Station/Bus Station")
     search = st.text_input("Search Station by Name")
     cs_df = st.session_state.charging_stations.copy()
-    cs_df.drop(columns=["Charging Events"], inplace=True)
     if search:
         cs_df = cs_df[cs_df['Station Name'].str.contains(search, case=False)]
     st.dataframe(cs_df, use_container_width=True)
@@ -567,9 +578,7 @@ with tabs[1]:
             bus_count = st.number_input("Number of Buses", min_value=1, value=1, step=1, key="new_bus_count")
             
 
-            start_date=st.date_input("Start Date")
             start_time=st.time_input("Start Time")
-            start_time = datetime.combine(start_date,start_time)
 
 
             submitted = st.form_submit_button("Add Service")
@@ -893,18 +902,19 @@ with tabs[2]:
         network = st.session_state.networks[
             st.session_state.networks['Network Name'] == selected_net
         ].iloc[0]
-
-        alloc_df = network['Allocations']
+        
+        alloc_df = pd.DataFrame(network['Allocations']) if not isinstance(network['Allocations'],pd.DataFrame) else network['Allocations']
+        
         charging_events = network.get('Charging Events', [])
         bus_schedule = network.get('Bus Schedule', [])
         bus_df = pd.DataFrame(bus_schedule)
+        
         invalid_arrival_df = bus_df[bus_df['arrival'] == "--"].copy()
         valid_arrival_df = bus_df[bus_df['arrival'] != "--"].copy()
         valid_arrival_df['arrival'] = pd.to_datetime(valid_arrival_df['arrival'], format="%H:%M", errors='coerce')
         valid_arrival_df = valid_arrival_df.sort_values(by='arrival')
         valid_arrival_df['arrival'] = valid_arrival_df['arrival'].dt.strftime('%H:%M')
         sorted_bus_df = pd.concat([invalid_arrival_df, valid_arrival_df], ignore_index=True)
-
 
         st.subheader(f"Charging Slot Allocation for '{selected_net}'")
 
@@ -934,7 +944,8 @@ with tabs[2]:
 
         all_events=[]
         all_events = net_df.get('Charging Events', []).iloc[0]
-        if   all_events:
+        
+        if  all_events:
             df = pd.DataFrame(all_events)
             cs_df = st.session_state.charging_stations.copy()
             df['Duration_Hours'] = df['energy_to_charge'] / df['station'].map({
@@ -966,47 +977,66 @@ with tabs[2]:
         rows = []
         charging_event_per_station = [event for event in charging_events if event['station'] == selected]
         total_chargers = st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Number of Chargers"]
+
+
+# Prepare rows
+        rows = []
+
         for charger_num in range(1, total_chargers + 1):
             charger_key = str(charger_num)
             events = [e for e in charging_event_per_station if str(e.get('charger_num')) == charger_key]
 
             if not events:
-                # Add a dummy row with minimal span for display
                 rows.append({
                     "Charger": f"Charger {charger_key}",
-                    "Start": datetime.now(),
-                    "Finish": datetime.now(),
+                    "Start": to_24h_datetime(0),
+                    "Finish": to_24h_datetime(1),
                     "Service": "Unused"
                 })
             else:
                 for event in events:
-                        rows.append({
+                    start_min = to_24h_reference(event["start_time"])
+                    end_min = to_24h_reference(event["end_time"])
+
+                    # Handle overnight wrap
+                    if end_min < start_min:
+                        end_min += 1440
+
+                    rows.append({
                         "Charger": f"Charger {charger_key}",
-                        "Start": event["start_time"],
-                        "Finish": event["end_time"],
+                        "Start": to_24h_datetime(start_min),
+                        "Finish": to_24h_datetime(end_min),
                         "Service": event.get("service", "Unknown")
                     })
-            df = pd.DataFrame(rows)
 
-                # Create Gantt chart
-            if df.empty:
-                st.write("No charging events to display.")
-            else:
-                fig = px.timeline(
-                    df,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="Charger",
-                    color="Service",
-                    title="Charging Station Gantt Chart",
+        df = pd.DataFrame(rows)
+
+        # Plot Gantt chart
+        if df.empty:
+            st.write("No charging events to display.")
+        else:
+
+            fig = px.timeline(
+                df,
+                x_start="Start",
+                x_end="Finish",
+                y="Charger",
+                color="Service",
+                title="Charging Station Gantt Chart (24h View)"
+            )
+
+            fig.update_layout(
+                xaxis=dict(
+                    tickformat="%H:%M",
+                    title="Time (24h)"
                 )
-        
-        # Reverse Y-axis so Charger 1 is at the top
-        fig.update_yaxes(autorange="reversed")
-        fig.update_traces(marker_line_color='black', marker_line_width=1)
+            )
 
+            fig.update_yaxes(autorange="reversed")
+            fig.update_traces(marker_line_color='black', marker_line_width=1)
 
-        st.plotly_chart(fig)
+            st.plotly_chart(fig)
+
 
         st.dataframe(sorted_bus_df)
 
@@ -1023,8 +1053,25 @@ with tabs[2]:
         edit_name = st.text_input("Network Name", value=net_row['Network Name'], key="edit_name")
         edit_tol = st.number_input("Tolerance (%)", min_value=0.0, value=float(net_row['Tolerance (%)']), key="edit_tol")
 
+        services_list = []
+
+        if isinstance(net_row['Services'], list):
+            # Check if list of dicts:
+            if len(net_row['Services']) > 0 and isinstance(net_row['Services'][0], dict):
+                for svc in net_row['Services']:
+                    services_list.append(svc.get('Service Name', ''))
+            else:
+                # maybe list of strings already
+                services_list = [str(s) for s in net_row['Services']]
+
+        elif isinstance(net_row['Services'], pd.DataFrame):
+            services_list = net_row['Services']['Service Name'].tolist()
+
+        else:
+            services_list = []
+
         all_services = st.session_state.services['Service Name'].tolist()
-        edit_svcs = st.multiselect("Select Services", all_services, default=net_row['Services'], key="edit_svcs") 
+        edit_svcs = st.multiselect("Select Services", all_services, default=services_list, key="edit_svcs")
 
         if st.button("💾 Save Network Changes"):
             #TODO::fix functionality 
@@ -1037,9 +1084,7 @@ with tabs[2]:
             else:
                 msg_box.warning("⚠️ Allocation failed. No changes were made.")
 
-            time.sleep(2)
             msg_box.empty()
-            st.rerun()
     
         
 
