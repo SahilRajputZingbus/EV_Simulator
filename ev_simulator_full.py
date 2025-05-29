@@ -27,7 +27,7 @@ collection = db["sessions"]
 
 STATE_KEYS = [
     "bus_stations", "charging_stations", "services",
-    "networks", "pending_service", "temp_route", "route_data_cache"
+    "networks",  "temp_route", "route_data_cache"
 ]
 
 def make_serializable(obj):
@@ -780,7 +780,7 @@ with tabs[1]:
         def interval_modal():
             intervals = []
             for i in range(1,bus_count ):
-                val = st.number_input(f"Interval between Bus {i} and {i+1} (min)", min_value=0, key=f"modal_interval_{i}",value=st.session_state.pending_service.get('Departure Intervals', [0] * (bus_count))[i])
+                val = st.number_input(f"Interval between Bus {i} and {i+1} (min)", min_value=0, key=f"modal_interval_{i}",value=st.session_state.pending_service.get('Departure Intervals', [0] * (bus_count))[i] if not st.session_state.pending_service.empty else 0)
                 intervals.append(val)
             if st.button("Confirm & Save"):
                 intervals.insert(0, 0)
@@ -798,8 +798,9 @@ with tabs[1]:
         @st.dialog("Set Buffer Tolerance")
         def buffer_modal():
             buffers=[]
+            
             for i in range(bus_count):
-                buffer = st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}", value=st.session_state.pending_service.get('Buffer Times', [0] * bus_count)[i])
+                buffer = st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}", value=st.session_state.pending_service.get('Buffer Times', [0] * bus_count)[i] if not st.session_state.pending_service.empty else 0)
                 buffers.append(buffer)
             if st.button("Confirm & Save"):
 
