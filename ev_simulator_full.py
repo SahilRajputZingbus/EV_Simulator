@@ -222,7 +222,6 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
         dep_intervals = service.get('Departure Intervals')
         bus_capacity_kwh = service['Bus Charging Capacity (kW)']
         mileage = service['Mileage (km/kWh)']
-        st.write(service)
         buffer_times = service['Buffer Times']
 
         prev_min = start_min
