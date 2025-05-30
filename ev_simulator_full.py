@@ -10,6 +10,7 @@ from pymongo import MongoClient
 import json
 import hashlib
 import math
+import re
 
 st.set_page_config(page_title="EV Network Planning", layout="wide")
 
@@ -476,8 +477,13 @@ with tabs[0]:
     st.header("Charging Station/Bus Station")
     search = st.text_input("Search Station by Name")
     cs_df = st.session_state.charging_stations.copy()
+    bus_df = pd.DataFrame(st.session_state.bus_stations).drop(columns=['ChargeFlag','BusStation'], errors='ignore')
     if search:
+        bus_df = bus_df[bus_df['Station'].str.contains(search, case=False)]
         cs_df = cs_df[cs_df['Station Name'].str.contains(search, case=False)]
+    st.subheader("Bus Stations")
+    st.dataframe(bus_df, use_container_width=True)
+    st.subheader("Charging Stations")
     st.dataframe(cs_df, use_container_width=True)
     
     
@@ -518,28 +524,46 @@ with tabs[0]:
 
                 if submit:
                     if station_type == "Charging Station":
-                        st.session_state.charging_stations = pd.concat([
-                            st.session_state.charging_stations,
-                            pd.DataFrame([{
-                                'Station Name': name,
-                                'Latitude': lat,
-                                'Longitude': lon,
-                                'Charging Capacity (kW)': cap,
-                                'Number of Chargers': num
-                            }])
-                        ], ignore_index=True)
-                        st.write("charging station sfdjjdsfsdkjfhjhskfhdsj")
+                        if not name :
+                            st.error("Please add a name field.")
+                        else:
+                            name_clean = re.sub(r'\W+', '', name.lower())
+                            existing_names = st.session_state.charging_stations['Station Name'].str.lower().str.replace(r'\W+', '', regex=True)
+                            if name_clean in existing_names.values:
+                                st.error(f"{station_type} '{re.sub(r'\W+', '', name)}' already exists.")
+                            else:
+                                st.session_state.charging_stations = pd.concat([
+                                    st.session_state.charging_stations,
+                                    pd.DataFrame([{
+                                        'Station Name': name,
+                                        'Latitude': lat,
+                                        'Longitude': lon,
+                                        'Charging Capacity (kW)': cap,
+                                        'Number of Chargers': num
+                                    }])
+                                ], ignore_index=True)
+                                st.success(f"{station_type} '{name}' added!")
+                                st.session_state.form_step = 0
+                                st.rerun()
                     else:
-                        st.session_state.bus_stations.append({
-                            'Station': name,
-                            'Latitude': lat,
-                            'Longitude': lon,
-                            'ChargeFlag': False,  
-                            'BusStation': True
-                        })
-                    st.success(f"{station_type} '{name}' added!")
-                    st.session_state.form_step = 0
-                    st.rerun()
+                        if not name:
+                            st.error("Please add a name field.")
+                        else:
+                            name_clean = re.sub(r'\W+', '', name.lower())
+                            existing_names = [re.sub(r'\W+', '', n['Station'].lower()) for n in st.session_state.bus_stations]
+                            if name_clean in existing_names:
+                                st.error(f"{station_type} '{re.sub(r'\W+', '', name)}' already exists.")
+                            else:
+                                st.session_state.bus_stations.append({
+                                    'Station': name,
+                                    'Latitude': lat,
+                                    'Longitude': lon,
+                                    'ChargeFlag': False,  
+                                    'BusStation': True
+                                })
+                                st.success(f"{station_type} '{name}' added!")
+                                st.session_state.form_step = 0
+                                st.rerun()
 
                 if cancel:
                     st.session_state.form_step = 0
