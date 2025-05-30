@@ -975,7 +975,6 @@ with tabs[1]:
                     st.session_state.show_buffer_modal = False
         st.session_state.show_buffer_modal_dismissed = True
         buffer_modal()
-    st.write(st.session_state.edit_buffer_times)
     st.subheader("Show Service Route & Distances")
     selected_srv = st.selectbox("Select Service", st.session_state.services['Service Name'].tolist())
     if selected_srv:
