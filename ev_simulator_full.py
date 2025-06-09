@@ -146,6 +146,9 @@ def init_session_state():
         st.session_state.route_data_cache = {}
     if "edit_departure_intervals" not in st.session_state:   
         st.session_state.edit_departure_intervals = None
+    if "edit_route_data" not in st.session_state:
+        st.session_state.edit_route_data=False
+    
 
     if "edit_buffer_times" not in st.session_state:
         st.session_state.edit_buffer_times = None
@@ -626,53 +629,57 @@ with tabs[1]:
             with add_buffer_col:
                 add_buffer = st.form_submit_button("Set Buffer Time")
             with submit_col:
-                submitted = st.form_submit_button("Add Service", disabled= not (st.session_state.add_service_cond[0] and st.session_state.add_service_cond[1]))
+                submitted = st.form_submit_button("Add Service", )
         if submitted:
             if st.session_state.temp_route:
-                distance_time_matrix= [
-                    {
-                        "distance_m":0,
-                        "distance_text":"0 km",
-                        "duration_s":0,
-                        "duration_text":"0 mins"
-                    }
-                ]
+                if st.session_state.add_service_cond[0] and (st.session_state.add_service_cond[1] or bus_count==1):
+                    distance_time_matrix= [
+                        {
+                            "distance_m":0,
+                            "distance_text":"0 km",
+                            "duration_s":0,
+                            "duration_text":"0 mins"
+                        }
+                    ]
 
-                for i in range(len(st.session_state.temp_route) - 1):
-                    origin = (st.session_state.temp_route[i]['Latitude'], st.session_state.temp_route[i]['Longitude'])
-                    destination = (st.session_state.temp_route[i + 1]['Latitude'], st.session_state.temp_route[i + 1]['Longitude'])
-                    result = getDistanceAndDurationGmaps(origin, destination)
-                    distance_time_matrix.append(result)
-                total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
-                total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
+                    for i in range(len(st.session_state.temp_route) - 1):
+                        origin = (st.session_state.temp_route[i]['Latitude'], st.session_state.temp_route[i]['Longitude'])
+                        destination = (st.session_state.temp_route[i + 1]['Latitude'], st.session_state.temp_route[i + 1]['Longitude'])
+                        result = getDistanceAndDurationGmaps(origin, destination)
+                        distance_time_matrix.append(result)
+                    total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
+                    total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
 
-                st.session_state.pending_service.at[0,'Service Name'] = svc_name
-                st.session_state.pending_service.at[0,'Bus Charging Capacity (kW)'] = svc_cap
-                st.session_state.pending_service.at[0,'Mileage (km/kWh)'] = mileage
-                st.session_state.pending_service.at[0,'Number of Buses'] = bus_count
-                st.session_state.pending_service.at[0,'Route Data'] = st.session_state.temp_route
-                st.session_state.pending_service.at[0,'Start Time'] = start_time
-                st.session_state.pending_service.at[0,'Distance (km)'] = total_distance
-                st.session_state.pending_service.at[0,'Duration (mins)'] = total_duration
-                st.session_state.pending_service.at[0,'Distance Time Matrix'] = distance_time_matrix
-                
-                st.session_state.temp_route = []
-                st.write(st.session_state.pending_service)
-                if st.session_state.pending_service['Departure Intervals'] is None:
-                    st.session_state.pending_service['Departure Intervals'] = [0] * (bus_count - 1)
-                if st.session_state.pending_service['Buffer Times'] is None:
-                    st.session_state.pending_service['Buffer Times'] = [0] * bus_count
-                st.session_state.services = pd.concat([
-                    st.session_state.services,
-                    st.session_state.pending_service
-                ], ignore_index=True)
-                st.success(f"Service '{svc_name}' added with {bus_count} buses.")
-                st.session_state.pending_service = pd.DataFrame(columns=[
-                    'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
-                    'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time',
-                    'Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix'
-                ])
-                st.rerun()
+                    st.session_state.pending_service.at[0,'Service Name'] = svc_name
+                    st.session_state.pending_service.at[0,'Bus Charging Capacity (kW)'] = svc_cap
+                    st.session_state.pending_service.at[0,'Mileage (km/kWh)'] = mileage
+                    st.session_state.pending_service.at[0,'Number of Buses'] = bus_count
+                    st.session_state.pending_service.at[0,'Route Data'] = st.session_state.temp_route
+                    st.session_state.pending_service.at[0,'Start Time'] = start_time
+                    st.session_state.pending_service.at[0,'Distance (km)'] = total_distance
+                    st.session_state.pending_service.at[0,'Duration (mins)'] = total_duration
+                    st.session_state.pending_service.at[0,'Distance Time Matrix'] = distance_time_matrix
+                    
+                    st.session_state.temp_route = []
+                    st.write(st.session_state.pending_service)
+                    if st.session_state.pending_service['Departure Intervals'] is None:
+                        st.session_state.pending_service['Departure Intervals'] = [0] * (bus_count - 1)
+                    if st.session_state.pending_service['Buffer Times'] is None:
+                        st.session_state.pending_service['Buffer Times'] = [0] * bus_count
+                    st.session_state.services = pd.concat([
+                        st.session_state.services,
+                        st.session_state.pending_service
+                    ], ignore_index=True)
+                    st.success(f"Service '{svc_name}' added with {bus_count} buses.")
+                    st.session_state.pending_service = pd.DataFrame(columns=[
+                        'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
+                        'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time',
+                        'Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix'
+                    ])
+                    st.session_state.add_service_cond=[False,False]
+                    st.rerun()
+                else:
+                    st.error("Please add Departure Interval and Buffer Time ")
                 
             else:
                 st.error("Please add at least one station.")
@@ -837,10 +844,12 @@ with tabs[1]:
             with col2:
                 if st.button("➕ Add Bus Station to Route",key="add_bus_station_to_route_edit"):
                     st.session_state.show_add_ext_busStation_modal_dismissed=False
+                    st.session_state.edit_route_data=True
                     st.session_state.show_add_ext_busStation_modal = True
             with col3:
                 if st.button("➕ Add Charging Station to Route",key="add_charging_station_to_route_edit"):
                     st.session_state.show_add_charger_station_modal_dismissed=False
+                    st.session_state.edit_route_data=True
                     st.session_state.show_add_charger_station_modal = True
     
             if st.session_state.temp_edit_route:
@@ -910,7 +919,13 @@ with tabs[1]:
                         st.write(f"**Charging Allowed:** {'Yes' if selected['ChargeFlag'] else 'No'}")
 
                         if st.button("Add to Route", key="ext_bus_add"):
-                            st.session_state.temp_route.append(selected.copy())
+                            if st.session_state.edit_route_data:
+                                st.session_state.temp_edit_route.append(selected.copy())
+                            else:
+                               
+                                st.session_state.temp_route.append(selected.copy())
+                            st.session_state.edit_route_data=False
+
                             st.success(f"Added '{selected_name}' to route.")
                             st.session_state.show_add_ext_busStation_modal = False
                             st.rerun()
@@ -942,13 +957,25 @@ with tabs[1]:
                     is_bus = False
 
                     if st.button("Add", key="charger_modal_add"):
-                        st.session_state.temp_route.append({
+                        if st.session_state.edit_route_data:
+                            st.session_state.temp_edit_route.append({
                             "Station": station_selected,
                             "Latitude": lat,
                             "Longitude": lon,
                             "ChargeFlag": charge,
                             "BusStation": is_bus
                         })
+                        else:
+                            
+                            st.session_state.temp_route.append({
+                            "Station": station_selected,
+                            "Latitude": lat,
+                            "Longitude": lon,
+                            "ChargeFlag": charge,
+                            "BusStation": is_bus
+                        })
+                        st.session_state.edit_route_data=False
+
                         st.warning(f"Charging station '{station_selected}' added to route.")
                         st.session_state.show_add_charger_station_modal = False
                         st.rerun()
