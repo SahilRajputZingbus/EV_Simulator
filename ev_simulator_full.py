@@ -79,7 +79,7 @@ def load_session_state(data):
             st.session_state[key] = pd.DataFrame(val, columns=[
                 'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
                 'Number of Buses', 'Departure Intervals', 'Route Data',
-                'Start Time', 'Distance (km)', 'Duration (mins)', 'Distance Time Matrix','Buffer Times'
+                'Start Time', 'Distance (km)', 'Duration (mins)', 'Distance Time Matrix','Buffer Times','Wait Time'
             ]) if isinstance(val, list) else pd.DataFrame()
 
         elif key == "networks":
@@ -126,7 +126,7 @@ def init_session_state():
     if "services" not in st.session_state:
         st.session_state.services = pd.DataFrame(columns=[
             'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)', 'Number of Buses',
-            'Departure Intervals', 'Route Data', 'Start Time', 'Distance (km)', 'Duration (mins)','Distance Time Matrix','Buffer Times'
+            'Departure Intervals', 'Route Data', 'Start Time', 'Distance (km)', 'Duration (mins)','Distance Time Matrix','Buffer Times','Wait Time'
         ])
     if "networks" not in st.session_state:
         st.session_state.networks = pd.DataFrame(columns=[
@@ -136,7 +136,7 @@ def init_session_state():
     if "pending_service" not in st.session_state:
         st.session_state.pending_service = pd.DataFrame(columns=[
             'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
-            'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time','Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix'
+            'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time','Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix','Wait Time'
         ])
     if "temp_route" not in st.session_state:
         st.session_state.temp_route = []
@@ -148,8 +148,8 @@ def init_session_state():
         st.session_state.edit_departure_intervals = None
     if "edit_route_data" not in st.session_state:
         st.session_state.edit_route_data=False
-    
-
+    if "edit_wait_times" not in st.session_state:
+        st.session_state.edit_wait_times = None
     if "edit_buffer_times" not in st.session_state:
         st.session_state.edit_buffer_times = None
     if "edit_svc" not in st.session_state:
@@ -232,6 +232,7 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
         bus_capacity_kwh = service['Bus Charging Capacity (kW)']
         mileage = service['Mileage (km/kWh)']
         buffer_times = service['Buffer Times']
+        wait_times= service['Wait Time']
 
         prev_min = start_min
 
@@ -282,23 +283,47 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                     with open("logs.txt", "a") as f:
                         f.write(f"Bus: {bus_name}, Arrival: {minutes_to_str(arrival_min)}, Needed: {needed}, Battery: {battery}, Target: {target}\n")
                     charge_minutes = 0 if needed == 0 else math.ceil((needed / charging_info[next_station['Station']]['capacity']) * 60)
-                    start_slot, end_slot = get_slot_range(arrival_min, charge_minutes + 5)
+                    start_slot, end_slot = get_slot_range(arrival_min, charge_minutes)
                     station_name = next_station['Station']
                     allocated = False
 
                     for charger_num, events in simulated_events[station_name].items():
-                        overlap = [
-                            e for e in events
-                            if not (end_slot <= e['start'] or start_slot >= e['end'])
-                        ]
-                        if not overlap:
-                            events.append({'start': start_slot, 'end': end_slot, 'bus': bus_name})
+                        found_slot = False
+                        shifted_end=end_slot
+                        shifted_start=start_slot
+                        if next_station==route[-1]:
+                            max_wait=wait_times[bus_num]
+                            shift=15
+                            
+                        
+                            while shift<= max_wait:
+                                shifted_start += shift
+                                shifted_end += shift
+                                overlap = [
+                                    e for e in events
+                                    if not (shifted_end <= e['start'] or shifted_start >= e['end'])
+                                ]
+                                with open("logs.txt", "a") as f:
+                                    f.write(f"Bus: {bus_name}, Station: {station_name}, Start Slot: {minutes_to_str(shifted_start)}, End Slot: {minutes_to_str(shifted_end)}, Overlap: {len(overlap)}\n")   
+                                if not overlap:
+                                    found_slot = True
+                                    break
+
+                        else:  
+                            overlap = [
+                                e for e in events
+                                if not (end_slot <= e['start'] or start_slot >= e['end'])
+                            ]
+                            with open("logs.txt", "a") as f:
+                                f.write(f"Bus: {bus_name}, Station: {station_name}, Start Slot: {minutes_to_str(start_slot)}, End Slot: {minutes_to_str(end_slot)}, Overlap: {len(overlap)}\n")
+                        if not overlap or found_slot:
+                            events.append({'start': start_slot if not found_slot else shifted_start, 'end': end_slot if not found_slot else shifted_end, 'bus': bus_name})
                             charging_events.append({
                                 'station': station_name,
                                 'bus_name': bus_name,
                                 'arrival': minutes_to_str(arrival_min),
-                                'start_time': minutes_to_str(start_slot),
-                                'end_time': minutes_to_str(end_slot),
+                                'start_time': minutes_to_str(start_slot) if not found_slot else minutes_to_str(shifted_start),
+                                'end_time': minutes_to_str(end_slot) if not found_slot else minutes_to_str(shifted_end),
                                 'service': service['Service Name'],
                                 'energy_to_charge': needed,
                                 'battery_before_pct': battery / bus_capacity_kwh * 100,
@@ -310,8 +335,8 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                                 "Station Name": station_name,
                                 "Bus Name": bus_name,
                                 "Charger #": charger_num,
-                                "Slot Start": minutes_to_str(start_slot),
-                                "Slot End": minutes_to_str(end_slot),
+                                "Slot Start": minutes_to_str(start_slot) if not found_slot else minutes_to_str(shifted_start),
+                                "Slot End": minutes_to_str(end_slot) if not found_slot else minutes_to_str(shifted_end),
                                 "Battery % on Arrival": f"{battery / bus_capacity_kwh * 100:.1f}%",
                                 "Battery % After Charging": f"{(battery + needed) / bus_capacity_kwh * 100:.1f}%",
                                 "Battery After Charging (kWh)": round(min(battery + needed, bus_capacity_kwh), 2)
@@ -319,6 +344,7 @@ def simulate_bus_trips(services_df, tolerance=10, charging_stations_df=None):
                             battery = min(battery + needed, bus_capacity_kwh)
                             departure_min = end_slot
                             allocated = True
+                            found_slot=False
                             break
 
                     if not allocated:
@@ -610,8 +636,10 @@ with tabs[1]:
     srv_df = st.session_state.services.copy()
     if search_s:
         srv_df = srv_df[srv_df['Service Name'].str.contains(search_s, case=False)]
-    st.dataframe(srv_df[['Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)', 'Number of Buses', 'Departure Intervals','Buffer Times','Distance (km)', 'Duration (mins)']], use_container_width=True)
-
+    try:
+        st.dataframe(srv_df[['Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)', 'Number of Buses', 'Departure Intervals','Buffer Times','Wait Time','Distance (km)', 'Duration (mins)']], use_container_width=True)
+    except Exception as e:
+        pass
     c1,c2=st.columns(2)
     with c1:
         st.subheader("Add Service")
@@ -622,17 +650,19 @@ with tabs[1]:
             bus_count = st.number_input("Number of Buses", min_value=1, value=1, step=1, key="new_bus_count")
             start_time=st.time_input("Start Time")  
 
-            add_interval_col, add_buffer_col, submit_col = st.columns([4, 4, 2])
+            add_interval_col, add_buffer_col,add_wait_time, submit_col = st.columns([5,4,4,3])
             with add_interval_col:
                 add_interval = st.form_submit_button("Set Departure Intervals")
-            
+            with add_wait_time:
+                add_wait = st.form_submit_button("Set Wait Time")
             with add_buffer_col:
                 add_buffer = st.form_submit_button("Set Buffer Time")
             with submit_col:
                 submitted = st.form_submit_button("Add Service", )
+
         if submitted:
             if st.session_state.temp_route:
-                if st.session_state.add_service_cond[0] and (st.session_state.add_service_cond[1] or bus_count==1):
+                if st.session_state.add_service_cond[0] and st.session_state.add_service_cond[2] and (st.session_state.add_service_cond[1]  or bus_count==1):
                     distance_time_matrix= [
                         {
                             "distance_m":0,
@@ -666,6 +696,8 @@ with tabs[1]:
                         st.session_state.pending_service['Departure Intervals'] = [0] * (bus_count - 1)
                     if st.session_state.pending_service['Buffer Times'] is None:
                         st.session_state.pending_service['Buffer Times'] = [0] * bus_count
+                    if st.session_state.pending_service['Wait Time'] is None:
+                        st.session_state.pending_service['Wait Time'] = [0] * bus_count
                     st.session_state.services = pd.concat([
                         st.session_state.services,
                         st.session_state.pending_service
@@ -674,9 +706,9 @@ with tabs[1]:
                     st.session_state.pending_service = pd.DataFrame(columns=[
                         'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
                         'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time',
-                        'Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix'
+                        'Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix','Wait Time'
                     ])
-                    st.session_state.add_service_cond=[False,False]
+                    st.session_state.add_service_cond=[False,False,False]
                     st.rerun()
                 else:
                     st.error("Please add Departure Interval and Buffer Time ")
@@ -698,6 +730,13 @@ with tabs[1]:
                 st.session_state.edit_svc = False
             else:
                 st.error("At least 1 bus is required to set buffer times.")
+        if add_wait:
+            if bus_count > 0:
+                st.session_state.show_wait_modal = True
+                st.session_state.show_wait_modal_dismissed = False
+                st.session_state.edit_svc = False
+            else:
+                st.error("At least 1 bus is required to set wait times.")
         
         col2, col3 = st.columns(2)
         with col2:
@@ -764,23 +803,24 @@ with tabs[1]:
                 st.session_state.edit_departure_intervals = svc['Departure Intervals'].copy()
                 st.session_state.temp_edit_route = svc['Route Data'].copy()
                 st.session_state.edit_buffer_times = svc['Buffer Times'].copy()
+                st.session_state.edit_wait_times = svc['Wait Time'].copy()
                 st.session_state.prev_selected_svc = selected_svc
             with st.form("edit_service"):
                
-                svc_cap = st.number_input("Bus Charging Capacity (kW)", min_value=1, key="edit_svc_cap", value=svc['Bus Charging Capacity (kW)'])
-                mileage = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="edit_svc_mileage", value=svc['Mileage (km/kWh)'])
-                bus_count = st.number_input("Number of Buses", min_value=1, step=1, key="edit_bus_count", value=svc['Number of Buses'])
-                start_time=st.time_input("Start Time", value=svc['Start Time'])
-               
-                edit_interval_col, edit_buffer_col, edit_submit_col = st.columns([4, 4, 2])
-                
-                with edit_interval_col:
-                    edit_interval = st.form_submit_button("Set Departure Intervals")
+                edit_svc_cap = st.number_input("Bus Charging Capacity (kW)", min_value=1, key="edit_svc_cap", value=svc['Bus Charging Capacity (kW)'])
+                edit_mileage = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="edit_svc_mileage", value=svc['Mileage (km/kWh)'])
+                edit_bus_count = st.number_input("Number of Buses", min_value=1, step=1, key="edit_bus_count", value=svc['Number of Buses'])
+                edit_start_time = st.time_input("Start Time", value=svc['Start Time'])
 
+                edit_interval_col, edit_buffer_col,edit_wait_time, edit_service_col = st.columns([5,4,4,3])
+                with edit_interval_col:
+                    edit_interval = st.form_submit_button("Edit Departure Intervals")
+                with edit_wait_time:
+                    edit_wait = st.form_submit_button("Edit Wait Time")
                 with edit_buffer_col:
-                    edit_buffer = st.form_submit_button("Set Buffer Time")
-                with edit_submit_col:
-                    editService = st.form_submit_button("Edit Service")
+                    edit_buffer = st.form_submit_button("Edit Buffer Time")
+                with edit_service_col:
+                    editService = st.form_submit_button("Edit Service", )
                 if editService:
                     if st.session_state.temp_edit_route:
                         distance_time_matrix= [
@@ -801,44 +841,54 @@ with tabs[1]:
                         total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
 
                         idx = st.session_state.services[st.session_state.services['Service Name'] == selected_svc].index[0]
-                        st.session_state.services.at[idx, 'Bus Charging Capacity (kW)'] = svc_cap
-                        st.session_state.services.at[idx, 'Mileage (km/kWh)'] = mileage
-                        st.session_state.services.at[idx, 'Number of Buses'] = bus_count
+                        st.session_state.services.at[idx, 'Bus Charging Capacity (kW)'] = edit_svc_cap
+                        st.session_state.services.at[idx, 'Mileage (km/kWh)'] = edit_mileage
+                        st.session_state.services.at[idx, 'Number of Buses'] = edit_bus_count
                         st.session_state.services.at[idx, 'Route Data'] = st.session_state.temp_edit_route
-                        st.session_state.services.at[idx, 'Start Time'] = start_time
+                        st.session_state.services.at[idx, 'Start Time'] = edit_start_time
                         st.session_state.services.at[idx, 'Distance (km)'] = total_distance
                         st.session_state.services.at[idx, 'Duration (mins)'] = total_duration
                         st.session_state.services.at[idx, 'Distance Time Matrix'] = distance_time_matrix
 
                         if st.session_state.edit_departure_intervals is None:
-                            st.session_state.edit_departure_intervals = [0] * (bus_count - 1)
+                            st.session_state.edit_departure_intervals = [0] * (edit_bus_count - 1)
                         if st.session_state.edit_buffer_times is None:
-                            st.session_state.edit_buffer_times = [0] * bus_count
+                            st.session_state.edit_buffer_times = [0] * edit_bus_count
+                        if st.session_state.edit_wait_times is None:
+                            st.session_state.edit_wait_times = [0] * edit_bus_count
 
+                        
+                        st.write(st.session_state.edit_wait_times)
                         st.session_state.services.at[idx, 'Departure Intervals'] = st.session_state.edit_departure_intervals
                         st.session_state.services.at[idx, 'Buffer Times'] = st.session_state.edit_buffer_times
-                        
-                        st.success(f"Service '{selected_svc}' updated with {bus_count} buses.")
+                        st.session_state.services.at[idx, 'Wait Time'] = st.session_state.edit_wait_times
+
+                        st.success(f"Service '{selected_svc}' updated with {edit_bus_count} buses.")
                         st.session_state.temp_edit_route = []
                         st.rerun()
                     else:
                         st.error("Please add at least one station.")
                 if edit_interval:
-                    
-                    if bus_count > 1:
+
+                    if edit_bus_count > 1:
                         st.session_state.show_interval_modal = True
                         st.session_state.show_interval_modal_dismissed = False
                         st.session_state.edit_svc = True
                     else:
                         st.error("At least 2 buses are required to set intervals.")
                 if edit_buffer:
-                
-                    if bus_count > 0:
+
+                    if edit_bus_count > 0:
                         st.session_state.show_buffer_modal = True
                         st.session_state.show_buffer_modal_dismissed = False
                         st.session_state.edit_svc = True
                     else:
                         st.error("At least 1 bus is required to set buffer times.")
+                if edit_wait:
+                    if edit_bus_count > 0:
+                        st.session_state.show_wait_modal = True
+                        st.session_state.show_wait_modal_dismissed = False
+                        st.session_state.edit_svc = True
                 
             col2, col3 = st.columns(2)
             with col2:
@@ -1006,7 +1056,7 @@ with tabs[1]:
                         st.session_state.show_interval_modal = False
                         st.rerun()
                 else:
-                    for i in range(1, bus_count):
+                    for i in range(1, edit_bus_count):
                         val = st.number_input(f"Interval between Bus {i} and {i+1} (min)", min_value=0, key=f"modal_interval{i}", value=st.session_state.edit_departure_intervals[i] if st.session_state.edit_departure_intervals else 0)
                         intervals.append(val)
                     if st.button("Confirm & Save "):
@@ -1041,18 +1091,51 @@ with tabs[1]:
                     st.session_state.show_buffer_modal = False
                     st.rerun()
             else:
-                for i in range(bus_count):
+                for i in range(edit_bus_count):
                     buffer = st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer{i}", value=st.session_state.edit_buffer_times[i] if st.session_state.edit_buffer_times else 0)
                     buffers.append(buffer)
                 if st.button("Confirm & Save "):
                     st.session_state.edit_buffer_times = buffers
                     st.session_state.show_buffer_modal = False
+                    st.session_state.show_buffer_modal_dismissed = True
                     st.rerun()
 
                 if st.button("Cancel "):
                     st.session_state.show_buffer_modal = False
         st.session_state.show_buffer_modal_dismissed = True
         buffer_modal()
+    if st.session_state.get("show_wait_modal", False) and not st.session_state.get("show_wait_modal_dismissed", False):
+        @st.dialog("Set Wait Time")
+        def wait_modal():
+            wait_times = []
+            if not st.session_state.edit_svc:
+                for i in range(bus_count):
+                    wait_time = st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait_{i}")
+                    wait_times.append(wait_time)
+                if st.button("Confirm & Save"):
+                    st.session_state.pending_service.at[0,'Wait Time'] = wait_times
+                    st.session_state.show_wait_modal = False
+                    st.session_state.show_wait_modal_dismissed = True
+                    st.session_state.add_service_cond[2]=True
+                    st.rerun()
+
+                if st.button("Cancel"):
+                    st.session_state.show_wait_modal = False
+                    st.rerun()
+            else:
+                for i in range(edit_bus_count):
+                    wait_time = st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait{i}")
+                    wait_times.append(wait_time)
+                if st.button("Confirm & Save "):
+                    st.session_state.edit_wait_times = wait_times
+                    st.session_state.show_wait_modal = False
+                    st.session_state.show_wait_modal_dismissed = True
+                    st.rerun()
+
+                if st.button("Cancel "):
+                    st.session_state.show_wait_modal = False
+        st.session_state.show_wait_modal_dismissed = True
+        wait_modal()
     st.subheader("Show Service Route & Distances")
     selected_srv = st.selectbox("Select Service", st.session_state.services['Service Name'].tolist())
     if selected_srv:
