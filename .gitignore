@@ -1,0 +1,5 @@
+# Everything except ev_simulator_full.py
+*
+!.gitignore
+!ev_simulator_full.py
+!requirements.txt
