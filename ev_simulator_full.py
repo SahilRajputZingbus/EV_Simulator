@@ -12,7 +12,7 @@ import hashlib
 import math
 import re
 
-st.set_page_config(page_title="EV Network Planning", layout="wide")
+st.set_page_config(page_title="EV Network Planning", layout="wide", page_icon="⚡")
 
 gmaps = googlemaps.Client(key="AIzaSyCcdyw_-0olqzOu9vSdDQBgZvaTw8GGLbc")
 
@@ -20,10 +20,17 @@ MONGO_URI = "mongodb+srv://sahilrajput:NM09NKfilkALYovi@cluster0.cybby1b.mongodb
 
 @st.cache_resource
 def get_mongo_client():
-    return MongoClient(MONGO_URI)
-    
-db = get_mongo_client()["ev_simulator"]
-collection = db["sessions"]
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        client.admin.command("ping")
+        return client
+    except Exception as e:
+        st.warning(f"MongoDB unavailable: {e}. Save/Load disabled.")
+        return None
+
+_mongo_client = get_mongo_client()
+db = _mongo_client["ev_simulator"] if _mongo_client else None
+collection = db["sessions"] if db is not None else None
 
 
 STATE_KEYS = [
@@ -92,6 +99,9 @@ def load_session_state(data):
             st.session_state[key] = val if val is not None else ({} if key == "route_data_cache" else [])
             
 def save_session_to_mongo(user_id="default_user"):
+    if collection is None:
+        st.error("MongoDB is not connected. Save is unavailable.")
+        return
     try:
         data = clean_session_state()
         collection.update_one(
@@ -104,8 +114,11 @@ def save_session_to_mongo(user_id="default_user"):
         with open("error_log.txt", "a") as f:
             f.write(f"{datetime.now()}: Failed to save session for user {user_id}: {str(e)}\n")
         st.error(f"Failed to save session: {e}")
-        
+
 def load_session_from_mongo(user_id="default_user"):
+    if collection is None:
+        st.error("MongoDB is not connected. Load is unavailable.")
+        return
     try:
         doc = collection.find_one({"_id": user_id})
         if doc and "state" in doc:
@@ -466,389 +479,509 @@ def getDistanceAndDurationGmaps(origin, destination,mode="driving"):
 
 
 
+
 st.markdown("""
-    <style>
-    /* Get the tab container and make it flex */
-    .centered-header {
-        text-align: center;
-        font-size: 2em;
-        margin-bottom: 1rem;
-    }
-    div[data-baseweb="tab-list"] {
-        display: flex;
-        justify-content: space-evenly;
-    }
-    
-    /* Make each tab fill space equally */
-    button[role="tab"] {
-        flex-grow: 1;
-        flex-basis: 0;
-        text-align: center;
-    }
-    </style>
+<style>
+/* ── Global ── */
+[data-testid="stAppViewContainer"] { background: #0f1117; }
+[data-testid="stSidebar"] { background: #1a1d27 !important; border-right: 1px solid #2e3250; }
+[data-testid="stSidebar"] * { color: #e0e4f0 !important; }
+
+/* ── Tabs ── */
+div[data-baseweb="tab-list"] {
+    display: flex; justify-content: space-evenly;
+    background: #1a1d27; border-radius: 12px;
+    padding: 6px; gap: 6px; margin-bottom: 1rem;
+}
+button[role="tab"] {
+    flex-grow: 1; flex-basis: 0; text-align: center;
+    border-radius: 8px !important; font-weight: 600 !important;
+    color: #8892b0 !important; background: transparent !important;
+    border: none !important; padding: 10px 0 !important;
+    transition: all 0.2s ease;
+}
+button[role="tab"][aria-selected="true"] {
+    background: #3b5bdb !important; color: #fff !important;
+    box-shadow: 0 2px 12px rgba(59,91,219,0.4);
+}
+
+/* ── Metric cards ── */
+.metric-card {
+    background: #1a1d27; border: 1px solid #2e3250;
+    border-radius: 12px; padding: 18px 20px;
+    text-align: center; margin-bottom: 1rem;
+}
+.metric-card .metric-value {
+    font-size: 2rem; font-weight: 700; color: #74c0fc; line-height: 1.1;
+}
+.metric-card .metric-label {
+    font-size: 0.75rem; color: #8892b0; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+/* ── Section header ── */
+.section-header {
+    font-size: 1.1rem; font-weight: 700; color: #cdd9f0;
+    padding: 10px 0 6px 0; border-bottom: 2px solid #3b5bdb;
+    margin-bottom: 14px; letter-spacing: 0.03em;
+}
+
+/* ── Route stop card ── */
+.stop-card {
+    background: #1e2235; border: 1px solid #2e3250;
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
+}
+.stop-card .stop-name { font-weight: 600; color: #e0e4f0; font-size: 0.95rem; }
+.stop-card .stop-meta { font-size: 0.78rem; color: #8892b0; margin-top: 2px; }
+.stop-card .badge-bus   { background: #1c7ed6; color: #fff; border-radius: 5px; padding: 2px 8px; font-size: 0.7rem; }
+.stop-card .badge-charger { background: #2f9e44; color: #fff; border-radius: 5px; padding: 2px 8px; font-size: 0.7rem; }
+
+/* ── Status badges ── */
+.badge-success { background: #2f9e44; color: #fff; border-radius: 5px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600; }
+.badge-fail    { background: #c92a2a; color: #fff; border-radius: 5px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600; }
+
+/* ── Page title ── */
+.page-title {
+    text-align: center; font-size: 2.1rem; font-weight: 800;
+    background: linear-gradient(90deg, #74c0fc, #3b5bdb);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 0.5rem;
+}
+.page-sub { text-align: center; color: #8892b0; font-size: 0.9rem; margin-bottom: 1.5rem; }
+
+/* ── Forms ── */
+div[data-testid="stForm"] {
+    background: #1a1d27; border: 1px solid #2e3250;
+    border-radius: 12px; padding: 18px;
+}
+/* ── Dataframe ── */
+[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+
+/* ── Buttons ── */
+button[kind="primaryFormSubmit"], button[kind="secondary"] {
+    border-radius: 8px !important; font-weight: 600 !important;
+}
+</style>
 """, unsafe_allow_html=True)
-# --- Layout Tabs ---
-st.markdown('<div class="centered-header">EV Network Planning & Simulation Tool</div>', unsafe_allow_html=True)
 
-st.sidebar.title("Save / Load")
+# ── Page header ──
+st.markdown('<div class="page-title">⚡ EV Network Planning & Simulation</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-sub">Plan charging infrastructure, define bus services, and run allocation simulations</div>', unsafe_allow_html=True)
 
-USER_ID = st.sidebar.text_input("User ID", value="1")
+# ── Sidebar ──
+with st.sidebar:
+    st.markdown("### 💾 Session")
+    USER_ID = st.text_input("User ID", value="1")
+    col_s, col_l = st.columns(2)
+    with col_s:
+        if st.button("Save", use_container_width=True):
+            save_session_to_mongo(USER_ID)
+    with col_l:
+        if st.button("Load", use_container_width=True):
+            load_session_from_mongo(USER_ID)
 
-if st.sidebar.button("💾 Save Session"):
-    save_session_to_mongo(USER_ID)
-
-if st.sidebar.button("📥 Load Session"):
-    load_session_from_mongo(USER_ID)
+    st.divider()
+    st.markdown("### 📊 Overview")
+    n_bus   = len(st.session_state.bus_stations)
+    n_cs    = len(st.session_state.charging_stations)
+    n_svc   = len(st.session_state.services)
+    n_net   = len(st.session_state.networks)
+    n_chrg  = int(st.session_state.charging_stations['Number of Chargers'].sum()) if n_cs else 0
+    st.metric("Bus Stations", n_bus)
+    st.metric("Charging Stations", n_cs)
+    st.metric("Total Chargers", n_chrg)
+    st.metric("Services", n_svc)
+    st.metric("Networks", n_net)
 
 if "station_type_choice" not in st.session_state:
-            st.session_state.station_type_choice = "Charging Station"
+    st.session_state.station_type_choice = "Charging Station"
 
+tabs = st.tabs(["🏢 Stations", "🚌 Services", "🌐 EV Network"])
 
-tabs = st.tabs(["Charging Station/Bus Station", "Service", "EV Network"])
-
-# --- Charging Station Screen ---
+# ══════════════════════════════════════════
+# TAB 0 — STATIONS
+# ══════════════════════════════════════════
 with tabs[0]:
-    st.header("Charging Station/Bus Station")
-    search = st.text_input("Search Station by Name")
-    cs_df = st.session_state.charging_stations.copy()
-    bus_df = pd.DataFrame(st.session_state.bus_stations).drop(columns=['ChargeFlag','BusStation'], errors='ignore')
+    # Metric row
+    cs_df_full = st.session_state.charging_stations.copy()
+    bus_list   = st.session_state.bus_stations
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{len(bus_list)}</div><div class="metric-label">Bus Stations</div></div>', unsafe_allow_html=True)
+    with m2:
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{len(cs_df_full)}</div><div class="metric-label">Charging Stations</div></div>', unsafe_allow_html=True)
+    with m3:
+        total_chargers = int(cs_df_full['Number of Chargers'].sum()) if not cs_df_full.empty else 0
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_chargers}</div><div class="metric-label">Total Chargers</div></div>', unsafe_allow_html=True)
+
+    search = st.text_input("🔍 Search station by name", placeholder="Type to filter…", key="station_search")
+
+    # Tables
+    bus_display = pd.DataFrame(bus_list).drop(columns=['ChargeFlag','BusStation'], errors='ignore')
+    cs_display  = cs_df_full.copy()
     if search:
-        bus_df = bus_df[bus_df['Station'].str.contains(search, case=False)]
-        cs_df = cs_df[cs_df['Station Name'].str.contains(search, case=False)]
-    st.subheader("Bus Stations")
-    st.dataframe(bus_df, use_container_width=True)
-    st.subheader("Charging Stations")
-    st.dataframe(cs_df, use_container_width=True)
-    
-    
-    col1,col2= st.columns(2)
+        if not bus_display.empty:
+            bus_display = bus_display[bus_display['Station'].str.contains(search, case=False)]
+        if not cs_display.empty:
+            cs_display = cs_display[cs_display['Station Name'].str.contains(search, case=False)]
+
+    with st.expander("🚏 Bus Stations", expanded=True):
+        if bus_display.empty:
+            st.info("No bus stations added yet.")
+        else:
+            st.dataframe(bus_display, use_container_width=True, hide_index=True)
+            # Delete bus station
+            del_bus = st.selectbox("Select bus station to delete", [""] + [s['Station'] for s in bus_list], key="del_bus_sel")
+            if del_bus and st.button("🗑️ Delete Bus Station", key="del_bus_btn"):
+                st.session_state.bus_stations = [s for s in st.session_state.bus_stations if s['Station'] != del_bus]
+                st.success(f"Bus station '{del_bus}' deleted.")
+                st.rerun()
+
+    with st.expander("⚡ Charging Stations", expanded=True):
+        if cs_display.empty:
+            st.info("No charging stations added yet.")
+        else:
+            st.dataframe(cs_display, use_container_width=True, hide_index=True)
+            # Delete charging station
+            del_cs = st.selectbox("Select charging station to delete", [""] + cs_display['Station Name'].tolist(), key="del_cs_sel")
+            if del_cs and st.button("🗑️ Delete Charging Station", key="del_cs_btn"):
+                st.session_state.charging_stations = st.session_state.charging_stations[
+                    st.session_state.charging_stations['Station Name'] != del_cs
+                ].reset_index(drop=True)
+                st.success(f"Charging station '{del_cs}' deleted.")
+                st.rerun()
+
+    st.divider()
+    col1, col2 = st.columns(2)
+
+    # ── ADD STATION ──
     with col1:
-        st.subheader("Add  Station")
+        st.markdown('<div class="section-header">➕ Add Station</div>', unsafe_allow_html=True)
         if "form_step" not in st.session_state:
-             st.session_state.form_step = 0
-        
+            st.session_state.form_step = 0
+
         with st.form("dynamic_form"):
             if st.session_state.form_step == 0:
-                # Step 1: Choose station type
-                selected_type=st.radio("Choose station type", ["Charging Station", "Bus Station"])
-                
-                next_step = st.form_submit_button("Next")
-                if next_step:
+                selected_type = st.radio("Choose station type", ["Charging Station", "Bus Station"], horizontal=True)
+                if st.form_submit_button("Next →"):
                     st.session_state.station_type_choice = selected_type
                     st.session_state.form_step = 1
                     st.rerun()
-
             elif st.session_state.form_step == 1:
-                # Step 2: Fill station details
                 station_type = st.session_state.station_type_choice
+                st.markdown(f"**Adding:** `{station_type}`")
                 name = st.text_input("Station Name")
-                lat = st.number_input("Latitude", format="%.6f")
-                lon = st.number_input("Longitude", format="%.6f")
+                c_lat, c_lon = st.columns(2)
+                with c_lat:
+                    lat = st.number_input("Latitude", format="%.6f")
+                with c_lon:
+                    lon = st.number_input("Longitude", format="%.6f")
 
                 if station_type == "Charging Station":
-                    cap = st.number_input("Charging Capacity (kW)", min_value=0)
-                    num = st.number_input("Number of Chargers", min_value=1, step=1)
-                st.write(station_type)
+                    c_cap, c_num = st.columns(2)
+                    with c_cap:
+                        cap = st.number_input("Capacity (kW)", min_value=0)
+                    with c_num:
+                        num = st.number_input("# Chargers", min_value=1, step=1)
 
-                space, column1, column2 = st.columns([16,4,3])
-                with column1:
-                    submit = st.form_submit_button("Add Station")
-                with column2:
+                _, c_add, c_cancel = st.columns([10, 3, 2])
+                with c_add:
+                    submit = st.form_submit_button("Add")
+                with c_cancel:
                     cancel = st.form_submit_button("Cancel")
 
                 if submit:
-                    if station_type == "Charging Station":
-                        if not name :
-                            st.error("Please add a name field.")
-                        else:
-                            name_clean = re.sub(r'\W+', '', name.lower())
+                    if not name:
+                        st.error("Station name is required.")
+                    else:
+                        name_clean = re.sub(r'\W+', '', name.lower())
+                        if station_type == "Charging Station":
                             existing_names = st.session_state.charging_stations['Station Name'].str.lower().str.replace(r'\W+', '', regex=True)
                             if name_clean in existing_names.values:
-                                st.error(f"{station_type} '{re.sub(r'\W+', '', name)}' already exists.")
+                                st.error(f"Charging station '{name}' already exists.")
                             else:
                                 st.session_state.charging_stations = pd.concat([
                                     st.session_state.charging_stations,
-                                    pd.DataFrame([{
-                                        'Station Name': name,
-                                        'Latitude': lat,
-                                        'Longitude': lon,
-                                        'Charging Capacity (kW)': cap,
-                                        'Number of Chargers': num
-                                    }])
+                                    pd.DataFrame([{'Station Name': name, 'Latitude': lat, 'Longitude': lon,
+                                                   'Charging Capacity (kW)': cap, 'Number of Chargers': num}])
                                 ], ignore_index=True)
-                                st.success(f"{station_type} '{name}' added!")
+                                st.success(f"✅ '{name}' added as charging station!")
                                 st.session_state.form_step = 0
                                 st.rerun()
-                    else:
-                        if not name:
-                            st.error("Please add a name field.")
                         else:
-                            name_clean = re.sub(r'\W+', '', name.lower())
                             existing_names = [re.sub(r'\W+', '', n['Station'].lower()) for n in st.session_state.bus_stations]
                             if name_clean in existing_names:
-                                st.error(f"{station_type} '{re.sub(r'\W+', '', name)}' already exists.")
+                                st.error(f"Bus station '{name}' already exists.")
                             else:
                                 st.session_state.bus_stations.append({
-                                    'Station': name,
-                                    'Latitude': lat,
-                                    'Longitude': lon,
-                                    'ChargeFlag': False,  
-                                    'BusStation': True
+                                    'Station': name, 'Latitude': lat, 'Longitude': lon,
+                                    'ChargeFlag': False, 'BusStation': True
                                 })
-                                st.success(f"{station_type} '{name}' added!")
+                                st.success(f"✅ '{name}' added as bus station!")
                                 st.session_state.form_step = 0
                                 st.rerun()
-
                 if cancel:
                     st.session_state.form_step = 0
                     st.rerun()
 
+    # ── EDIT STATION ──
     with col2:
-        st.subheader("Edit Station")
-        if not cs_df.empty:
-            selected = st.selectbox("Select Station to Edit", cs_df['Station Name'].tolist())
-            st.write(selected)
+        st.markdown('<div class="section-header">✏️ Edit Charging Station</div>', unsafe_allow_html=True)
+        if not cs_df_full.empty:
+            selected = st.selectbox("Select station to edit", cs_df_full['Station Name'].tolist(), key="edit_cs_sel")
             station = st.session_state.charging_stations[
                 st.session_state.charging_stations['Station Name'] == selected
             ].iloc[0]
-            new_cap = st.number_input("Charging Capacity (kW)", value=station['Charging Capacity (kW)'])
-            new_num = st.number_input("Number of Chargers", value=int(station['Number of Chargers']))
-            new_lat = st.number_input("Latitude", value=station.get('Latitude', 0.0), format="%.6f")
-            new_lon = st.number_input("Longitude", value=station.get('Longitude', 0.0), format="%.6f")
-            if st.button("Update Station"):
+            e1, e2 = st.columns(2)
+            with e1:
+                new_cap = st.number_input("Capacity (kW)", value=float(station['Charging Capacity (kW)']), key="edit_cap")
+                new_lat = st.number_input("Latitude", value=float(station.get('Latitude', 0.0)), format="%.6f", key="edit_lat")
+            with e2:
+                new_num = st.number_input("# Chargers", value=int(station['Number of Chargers']), key="edit_num")
+                new_lon = st.number_input("Longitude", value=float(station.get('Longitude', 0.0)), format="%.6f", key="edit_lon")
+            if st.button("💾 Update Station", use_container_width=True):
                 idx = st.session_state.charging_stations[
                     st.session_state.charging_stations['Station Name'] == selected
                 ].index[0]
                 st.session_state.charging_stations.at[idx, 'Charging Capacity (kW)'] = new_cap
-                st.session_state.charging_stations.at[idx, 'Number of Chargers'] = new_num
-                st.session_state.charging_stations.at[idx, 'Latitude'] = new_lat
-                st.session_state.charging_stations.at[idx, 'Longitude'] = new_lon
-                st.success(f"Station '{selected}' updated.")
-    if st.session_state.charging_stations.empty:
-        st.warning("No charging stations available.")
-    
-        
+                st.session_state.charging_stations.at[idx, 'Number of Chargers']     = new_num
+                st.session_state.charging_stations.at[idx, 'Latitude']               = new_lat
+                st.session_state.charging_stations.at[idx, 'Longitude']              = new_lon
+                st.success(f"✅ Station '{selected}' updated.")
+        else:
+            st.info("Add a charging station first to edit it.")
 
-# --- Service Screen ---
+# ══════════════════════════════════════════
+# TAB 1 — SERVICES
+# ══════════════════════════════════════════
 with tabs[1]:
-    st.header("Service / Bus")
-    search_s = st.text_input("Search Service by Name")
-    srv_df = st.session_state.services.copy()
+    svc_full = st.session_state.services.copy()
+
+    # Metric row
+    total_buses = int(svc_full['Number of Buses'].sum()) if not svc_full.empty and 'Number of Buses' in svc_full.columns else 0
+    sm1, sm2, sm3 = st.columns(3)
+    with sm1:
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{len(svc_full)}</div><div class="metric-label">Services</div></div>', unsafe_allow_html=True)
+    with sm2:
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_buses}</div><div class="metric-label">Total Buses</div></div>', unsafe_allow_html=True)
+    with sm3:
+        total_km = round(svc_full['Distance (km)'].sum(), 1) if not svc_full.empty and 'Distance (km)' in svc_full.columns else 0
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_km}</div><div class="metric-label">Total Route km</div></div>', unsafe_allow_html=True)
+
+    search_s = st.text_input("🔍 Search service by name", placeholder="Type to filter…", key="svc_search")
+    srv_df = svc_full.copy()
     if search_s:
         srv_df = srv_df[srv_df['Service Name'].str.contains(search_s, case=False)]
-    try:
-        st.dataframe(srv_df[['Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)', 'Number of Buses', 'Departure Intervals','Buffer Times','Wait Time','Distance (km)', 'Duration (mins)']], use_container_width=True)
-    except Exception as e:
-        pass
-    c1,c2=st.columns(2)
-    with c1:
-        st.subheader("Add Service")
-        with st.form("add_service"):
-            svc_name = st.text_input("Service Name", key="new_svc_name")
-            svc_cap = st.number_input("Bus Charging Capacity (kW)", min_value=1, key="new_svc_cap")
-            mileage = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="new_svc_mileage")
-            bus_count = st.number_input("Number of Buses", min_value=1, value=1, step=1, key="new_bus_count")
-            start_time=st.time_input("Start Time")  
 
-            add_interval_col, add_buffer_col,add_wait_time, submit_col = st.columns([5,4,4,3])
-            with add_interval_col:
-                add_interval = st.form_submit_button("Set Departure Intervals")
-            with add_wait_time:
-                add_wait = st.form_submit_button("Set Wait Time")
-            with add_buffer_col:
-                add_buffer = st.form_submit_button("Set Buffer Time")
-            with submit_col:
-                submitted = st.form_submit_button("Add Service", )
+    with st.expander("📋 All Services", expanded=True):
+        if srv_df.empty:
+            st.info("No services added yet.")
+        else:
+            display_cols = [c for c in ['Service Name','Bus Charging Capacity (kW)','Mileage (km/kWh)',
+                            'Number of Buses','Distance (km)','Duration (mins)','Start Time'] if c in srv_df.columns]
+            st.dataframe(srv_df[display_cols], use_container_width=True, hide_index=True)
+            del_svc = st.selectbox("Select service to delete", [""] + srv_df['Service Name'].tolist(), key="del_svc_sel")
+            if del_svc and st.button("🗑️ Delete Service", key="del_svc_btn"):
+                st.session_state.services = st.session_state.services[
+                    st.session_state.services['Service Name'] != del_svc
+                ].reset_index(drop=True)
+                st.success(f"Service '{del_svc}' deleted.")
+                st.rerun()
+
+    st.divider()
+    c1, c2 = st.columns(2)
+
+    # ── ADD SERVICE ──
+    with c1:
+        st.markdown('<div class="section-header">➕ Add Service</div>', unsafe_allow_html=True)
+        with st.form("add_service"):
+            svc_name  = st.text_input("Service Name", key="new_svc_name")
+            f1, f2    = st.columns(2)
+            with f1:
+                svc_cap   = st.number_input("Bus Battery (kWh)", min_value=1, key="new_svc_cap")
+                bus_count = st.number_input("Number of Buses", min_value=1, value=1, step=1, key="new_bus_count")
+            with f2:
+                mileage    = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="new_svc_mileage")
+                start_time = st.time_input("Start Time", key="new_start_time")
+
+            btn_cols = st.columns(4)
+            with btn_cols[0]:
+                add_interval = st.form_submit_button("⏱ Intervals")
+            with btn_cols[1]:
+                add_buffer   = st.form_submit_button("🛡 Buffer")
+            with btn_cols[2]:
+                add_wait     = st.form_submit_button("⏳ Wait")
+            with btn_cols[3]:
+                submitted    = st.form_submit_button("✅ Add", type="primary")
 
         if submitted:
-            if st.session_state.temp_route:
-                if st.session_state.add_service_cond[0] and st.session_state.add_service_cond[2] and (st.session_state.add_service_cond[1]  or bus_count==1):
-                    distance_time_matrix= [
-                        {
-                            "distance_m":0,
-                            "distance_text":"0 km",
-                            "duration_s":0,
-                            "duration_text":"0 mins"
-                        }
-                    ]
-
-                    for i in range(len(st.session_state.temp_route) - 1):
-                        origin = (st.session_state.temp_route[i]['Latitude'], st.session_state.temp_route[i]['Longitude'])
-                        destination = (st.session_state.temp_route[i + 1]['Latitude'], st.session_state.temp_route[i + 1]['Longitude'])
-                        result = getDistanceAndDurationGmaps(origin, destination)
-                        distance_time_matrix.append(result)
-                    total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
-                    total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
-
-                    st.session_state.pending_service.at[0,'Service Name'] = svc_name
-                    st.session_state.pending_service.at[0,'Bus Charging Capacity (kW)'] = svc_cap
-                    st.session_state.pending_service.at[0,'Mileage (km/kWh)'] = mileage
-                    st.session_state.pending_service.at[0,'Number of Buses'] = bus_count
-                    st.session_state.pending_service.at[0,'Route Data'] = st.session_state.temp_route
-                    st.session_state.pending_service.at[0,'Start Time'] = start_time
-                    st.session_state.pending_service.at[0,'Distance (km)'] = total_distance
-                    st.session_state.pending_service.at[0,'Duration (mins)'] = total_duration
-                    st.session_state.pending_service.at[0,'Distance Time Matrix'] = distance_time_matrix
-                    
-                    st.session_state.temp_route = []
-                    st.write(st.session_state.pending_service)
-                    if st.session_state.pending_service['Departure Intervals'] is None:
-                        st.session_state.pending_service['Departure Intervals'] = [0] * (bus_count - 1)
-                    if st.session_state.pending_service['Buffer Times'] is None:
-                        st.session_state.pending_service['Buffer Times'] = [0] * bus_count
-                    if st.session_state.pending_service['Wait Time'] is None:
-                        st.session_state.pending_service['Wait Time'] = [0] * bus_count
-                    st.session_state.services = pd.concat([
-                        st.session_state.services,
-                        st.session_state.pending_service
-                    ], ignore_index=True)
-                    st.success(f"Service '{svc_name}' added with {bus_count} buses.")
-                    st.session_state.pending_service = pd.DataFrame(columns=[
-                        'Service Name', 'Bus Charging Capacity (kW)', 'Mileage (km/kWh)',
-                        'Number of Buses', 'Departure Intervals', 'Route Data', 'Start Time',
-                        'Buffer Times','Distance (km)', 'Duration (mins)', 'Distance Time Matrix','Wait Time'
-                    ])
-                    st.session_state.add_service_cond=[False,False,False]
-                    st.rerun()
-                else:
-                    st.error("Please add Departure Interval and Buffer Time ")
-                
+            if not st.session_state.temp_route:
+                st.error("Add at least one station to the route first.")
+            elif not (st.session_state.add_service_cond[0] and st.session_state.add_service_cond[2] and
+                      (st.session_state.add_service_cond[1] or bus_count == 1)):
+                st.error("Please set Buffer Time and Wait Time (and Departure Intervals if >1 bus).")
             else:
-                st.error("Please add at least one station.")
-                
+                with st.spinner("Fetching distances from Google Maps…"):
+                    distance_time_matrix = [{"distance_m":0,"distance_text":"0 km","duration_s":0,"duration_text":"0 mins"}]
+                    for i in range(len(st.session_state.temp_route) - 1):
+                        origin      = (st.session_state.temp_route[i]['Latitude'],     st.session_state.temp_route[i]['Longitude'])
+                        destination = (st.session_state.temp_route[i+1]['Latitude'],   st.session_state.temp_route[i+1]['Longitude'])
+                        distance_time_matrix.append(getDistanceAndDurationGmaps(origin, destination))
+                total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
+                total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
+
+                st.session_state.pending_service.at[0,'Service Name']              = svc_name
+                st.session_state.pending_service.at[0,'Bus Charging Capacity (kW)']= svc_cap
+                st.session_state.pending_service.at[0,'Mileage (km/kWh)']          = mileage
+                st.session_state.pending_service.at[0,'Number of Buses']           = bus_count
+                st.session_state.pending_service.at[0,'Route Data']                = st.session_state.temp_route
+                st.session_state.pending_service.at[0,'Start Time']                = start_time
+                st.session_state.pending_service.at[0,'Distance (km)']             = total_distance
+                st.session_state.pending_service.at[0,'Duration (mins)']           = total_duration
+                st.session_state.pending_service.at[0,'Distance Time Matrix']      = distance_time_matrix
+
+                st.session_state.temp_route = []
+                _di = st.session_state.pending_service.at[0, 'Departure Intervals']
+                if _di is None or (not isinstance(_di, list) and pd.isna(_di)):
+                    st.session_state.pending_service.at[0, 'Departure Intervals'] = [0] * (bus_count - 1)
+                _bt = st.session_state.pending_service.at[0, 'Buffer Times']
+                if _bt is None or (not isinstance(_bt, list) and pd.isna(_bt)):
+                    st.session_state.pending_service.at[0, 'Buffer Times'] = [0] * bus_count
+                _wt = st.session_state.pending_service.at[0, 'Wait Time']
+                if _wt is None or (not isinstance(_wt, list) and pd.isna(_wt)):
+                    st.session_state.pending_service.at[0, 'Wait Time'] = [0] * bus_count
+
+                st.session_state.services = pd.concat([
+                    st.session_state.services,
+                    st.session_state.pending_service
+                ], ignore_index=True)
+                st.success(f"✅ Service '{svc_name}' added with {bus_count} bus(es).")
+                st.session_state.pending_service = pd.DataFrame(columns=[
+                    'Service Name','Bus Charging Capacity (kW)','Mileage (km/kWh)',
+                    'Number of Buses','Departure Intervals','Route Data','Start Time',
+                    'Buffer Times','Distance (km)','Duration (mins)','Distance Time Matrix','Wait Time'
+                ])
+                st.session_state.add_service_cond = [False, False, False]
+                st.rerun()
+
         if add_interval:
             if bus_count > 1:
                 st.session_state.show_interval_modal = True
                 st.session_state.show_interval_modal_dismissed = False
                 st.session_state.edit_svc = False
             else:
-                st.error("At least 2 buses are required to set intervals.")
+                st.error("Need at least 2 buses to set departure intervals.")
         if add_buffer:
-            if bus_count > 0:
-                st.session_state.show_buffer_modal = True
-                st.session_state.show_buffer_modal_dismissed = False
-                st.session_state.edit_svc = False
-            else:
-                st.error("At least 1 bus is required to set buffer times.")
+            st.session_state.show_buffer_modal = True
+            st.session_state.show_buffer_modal_dismissed = False
+            st.session_state.edit_svc = False
         if add_wait:
-            if bus_count > 0:
-                st.session_state.show_wait_modal = True
-                st.session_state.show_wait_modal_dismissed = False
-                st.session_state.edit_svc = False
-            else:
-                st.error("At least 1 bus is required to set wait times.")
-        
-        col2, col3 = st.columns(2)
-        with col2:
-            if st.button("➕ Add Bus Station to Route", key="add_bus_station_to_route"):
-                st.session_state.show_add_ext_busStation_modal_dismissed=False
+            st.session_state.show_wait_modal = True
+            st.session_state.show_wait_modal_dismissed = False
+            st.session_state.edit_svc = False
+
+        # Route builder buttons
+        rb1, rb2 = st.columns(2)
+        with rb1:
+            if st.button("🚏 Add Bus Station to Route", key="add_bus_station_to_route", use_container_width=True):
+                st.session_state.show_add_ext_busStation_modal_dismissed = False
                 st.session_state.show_add_ext_busStation_modal = True
-        with col3:
-            if st.button("➕ Add Charging Station to Route", key="add_charging_station_to_route"):
-                st.session_state.show_add_charger_station_modal_dismissed=False
+        with rb2:
+            if st.button("⚡ Add Charging Station to Route", key="add_charging_station_to_route", use_container_width=True):
+                st.session_state.show_add_charger_station_modal_dismissed = False
                 st.session_state.show_add_charger_station_modal = True
 
+        # Route preview
         if st.session_state.temp_route:
-            st.subheader("Current Route")
-
-            if st.button("🔄 Reverse Route"):
+            st.markdown('<div class="section-header">🗺️ Current Route</div>', unsafe_allow_html=True)
+            if st.button("🔄 Reverse Route", key="rev_add"):
                 st.session_state.temp_route.reverse()
                 st.rerun()
-
             for i, stop in enumerate(st.session_state.temp_route):
-                col1, col2, col3, col4, col5 = st.columns([4, 2, 1, 1, 1])
-                with col1:
-                    st.markdown(
-                        f"{stop['Station']}  \n"
-                        f"Lat: {stop['Latitude']} | Lon: {stop['Longitude']}  \n"
-                        f"Charging: {'✅' if stop['ChargeFlag'] else '❌'} | Type: {'Bus Stand' if stop['BusStation'] else 'Charger'}"
-                    )
-                with col2:
-                    st.write(f"Position: {i + 1}")
-                with col3:
+                badge = '<span class="badge-bus">Bus Stand</span>' if stop['BusStation'] else '<span class="badge-charger">Charger</span>'
+                charge_icon = "✅" if stop['ChargeFlag'] else "❌"
+                st.markdown(f"""
+                <div class="stop-card">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span class="stop-name">#{i+1} &nbsp; {stop['Station']}</span>
+                    {badge}
+                  </div>
+                  <div class="stop-meta">
+                    📍 {stop['Latitude']:.4f}, {stop['Longitude']:.4f} &nbsp;|&nbsp; Charge: {charge_icon}
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+                rc1, rc2, rc3 = st.columns([1, 1, 1])
+                with rc1:
                     if i > 0 and st.button("⬆", key=f"up_{i}"):
-                        st.session_state.temp_route[i], st.session_state.temp_route[i - 1] = (
-                            st.session_state.temp_route[i - 1],
-                            st.session_state.temp_route[i],
-                        )
+                        st.session_state.temp_route[i], st.session_state.temp_route[i-1] = st.session_state.temp_route[i-1], st.session_state.temp_route[i]
                         st.rerun()
-                with col4:
+                with rc2:
                     if i < len(st.session_state.temp_route) - 1 and st.button("⬇", key=f"down_{i}"):
-                        st.session_state.temp_route[i], st.session_state.temp_route[i + 1] = (
-                            st.session_state.temp_route[i + 1],
-                            st.session_state.temp_route[i],
-                        )
+                        st.session_state.temp_route[i], st.session_state.temp_route[i+1] = st.session_state.temp_route[i+1], st.session_state.temp_route[i]
                         st.rerun()
-                with col5:
+                with rc3:
                     if st.button("🗑️", key=f"delete_{i}"):
                         st.session_state.temp_route.pop(i)
                         st.rerun()
-    
 
+    # ── EDIT SERVICE ──
     with c2:
-    # Buttons to add stations to route (outside form)
-        st.subheader("Edit Service")
+        st.markdown('<div class="section-header">✏️ Edit Service</div>', unsafe_allow_html=True)
         if not srv_df.empty:
-            selected_svc = st.selectbox("Select Service to Edit", srv_df['Service Name'].tolist(),key="edit_svc_select")
-            
-            svc= st.session_state.services[
-                    st.session_state.services['Service Name'] == selected_svc
-                ].iloc[0]
+            selected_svc = st.selectbox("Select service to edit", srv_df['Service Name'].tolist(), key="edit_svc_select")
+            svc = st.session_state.services[st.session_state.services['Service Name'] == selected_svc].iloc[0]
+
             if selected_svc != st.session_state.prev_selected_svc:
-                with open("logs.txt", "a") as f: 
-                    f.write(f"Selected Service: {selected_svc}\n")
-                svc = st.session_state.services[
-                    st.session_state.services['Service Name'] == selected_svc
-                ].iloc[0]
-                st.session_state.edit_departure_intervals = svc['Departure Intervals'].copy()
-                st.session_state.temp_edit_route = svc['Route Data'].copy()
-                st.session_state.edit_buffer_times = svc['Buffer Times'].copy()
-                st.session_state.edit_wait_times = svc['Wait Time'].copy()
-                st.session_state.prev_selected_svc = selected_svc
+                st.session_state.edit_departure_intervals = svc['Departure Intervals'].copy() if isinstance(svc['Departure Intervals'], list) else None
+                st.session_state.temp_edit_route          = svc['Route Data'].copy() if isinstance(svc['Route Data'], list) else []
+                st.session_state.edit_buffer_times        = svc['Buffer Times'].copy() if isinstance(svc['Buffer Times'], list) else None
+                st.session_state.edit_wait_times          = svc['Wait Time'].copy() if isinstance(svc['Wait Time'], list) else None
+                st.session_state.prev_selected_svc        = selected_svc
+
             with st.form("edit_service"):
-               
-                edit_svc_cap = st.number_input("Bus Charging Capacity (kW)", min_value=1, key="edit_svc_cap", value=svc['Bus Charging Capacity (kW)'])
-                edit_mileage = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="edit_svc_mileage", value=svc['Mileage (km/kWh)'])
-                edit_bus_count = st.number_input("Number of Buses", min_value=1, step=1, key="edit_bus_count", value=svc['Number of Buses'])
-                edit_start_time = st.time_input("Start Time", value=svc['Start Time'])
+                ef1, ef2 = st.columns(2)
+                with ef1:
+                    edit_svc_cap  = st.number_input("Bus Battery (kWh)", min_value=1, key="edit_svc_cap",   value=int(svc['Bus Charging Capacity (kW)']))
+                    edit_bus_count= st.number_input("Number of Buses",   min_value=1, step=1, key="edit_bus_count", value=int(svc['Number of Buses']))
+                with ef2:
+                    edit_mileage  = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="edit_svc_mileage", value=float(svc['Mileage (km/kWh)']))
+                    _st_val = svc['Start Time']
+                    if isinstance(_st_val, str):
+                        _st_val = datetime.strptime(_st_val.split("T")[-1][:5], "%H:%M").time()
+                    edit_start_time = st.time_input("Start Time", value=_st_val, key="edit_start_time")
 
-                edit_interval_col, edit_buffer_col,edit_wait_time, edit_service_col = st.columns([5,4,4,3])
-                with edit_interval_col:
-                    edit_interval = st.form_submit_button("Edit Departure Intervals")
-                with edit_wait_time:
-                    edit_wait = st.form_submit_button("Edit Wait Time")
-                with edit_buffer_col:
-                    edit_buffer = st.form_submit_button("Edit Buffer Time")
-                with edit_service_col:
-                    editService = st.form_submit_button("Edit Service", )
+                eb1, eb2, eb3, eb4 = st.columns(4)
+                with eb1:
+                    edit_interval = st.form_submit_button("⏱ Intervals")
+                with eb2:
+                    edit_buffer   = st.form_submit_button("🛡 Buffer")
+                with eb3:
+                    edit_wait     = st.form_submit_button("⏳ Wait")
+                with eb4:
+                    editService   = st.form_submit_button("💾 Save", type="primary")
+
                 if editService:
-                    if st.session_state.temp_edit_route:
-                        distance_time_matrix= [
-                            {
-                                "distance_m":0,
-                                "distance_text":"0 km",
-                                "duration_s":0,
-                                "duration_text":"0 mins"
-                            }
-                        ]
-
-                        for i in range(len(st.session_state.temp_edit_route) - 1):
-                            origin = (st.session_state.temp_edit_route[i]['Latitude'], st.session_state.temp_edit_route[i]['Longitude'])
-                            destination = (st.session_state.temp_edit_route[i + 1]['Latitude'], st.session_state.temp_edit_route[i + 1]['Longitude'])
-                            result = getDistanceAndDurationGmaps(origin, destination)
-                            distance_time_matrix.append(result)
+                    if not st.session_state.temp_edit_route:
+                        st.error("Route cannot be empty.")
+                    else:
+                        with st.spinner("Fetching distances…"):
+                            distance_time_matrix = [{"distance_m":0,"distance_text":"0 km","duration_s":0,"duration_text":"0 mins"}]
+                            for i in range(len(st.session_state.temp_edit_route) - 1):
+                                origin      = (st.session_state.temp_edit_route[i]['Latitude'],   st.session_state.temp_edit_route[i]['Longitude'])
+                                destination = (st.session_state.temp_edit_route[i+1]['Latitude'], st.session_state.temp_edit_route[i+1]['Longitude'])
+                                distance_time_matrix.append(getDistanceAndDurationGmaps(origin, destination))
                         total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
                         total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
 
                         idx = st.session_state.services[st.session_state.services['Service Name'] == selected_svc].index[0]
                         st.session_state.services.at[idx, 'Bus Charging Capacity (kW)'] = edit_svc_cap
-                        st.session_state.services.at[idx, 'Mileage (km/kWh)'] = edit_mileage
-                        st.session_state.services.at[idx, 'Number of Buses'] = edit_bus_count
-                        st.session_state.services.at[idx, 'Route Data'] = st.session_state.temp_edit_route
-                        st.session_state.services.at[idx, 'Start Time'] = edit_start_time
-                        st.session_state.services.at[idx, 'Distance (km)'] = total_distance
-                        st.session_state.services.at[idx, 'Duration (mins)'] = total_duration
-                        st.session_state.services.at[idx, 'Distance Time Matrix'] = distance_time_matrix
+                        st.session_state.services.at[idx, 'Mileage (km/kWh)']           = edit_mileage
+                        st.session_state.services.at[idx, 'Number of Buses']            = edit_bus_count
+                        st.session_state.services.at[idx, 'Route Data']                 = st.session_state.temp_edit_route
+                        st.session_state.services.at[idx, 'Start Time']                 = edit_start_time
+                        st.session_state.services.at[idx, 'Distance (km)']              = total_distance
+                        st.session_state.services.at[idx, 'Duration (mins)']            = total_duration
+                        st.session_state.services.at[idx, 'Distance Time Matrix']       = distance_time_matrix
 
                         if st.session_state.edit_departure_intervals is None:
                             st.session_state.edit_departure_intervals = [0] * (edit_bus_count - 1)
@@ -857,576 +990,486 @@ with tabs[1]:
                         if st.session_state.edit_wait_times is None:
                             st.session_state.edit_wait_times = [0] * edit_bus_count
 
-                        
-                        st.write(st.session_state.edit_wait_times)
                         st.session_state.services.at[idx, 'Departure Intervals'] = st.session_state.edit_departure_intervals
-                        st.session_state.services.at[idx, 'Buffer Times'] = st.session_state.edit_buffer_times
-                        st.session_state.services.at[idx, 'Wait Time'] = st.session_state.edit_wait_times
-
-                        st.success(f"Service '{selected_svc}' updated with {edit_bus_count} buses.")
+                        st.session_state.services.at[idx, 'Buffer Times']        = st.session_state.edit_buffer_times
+                        st.session_state.services.at[idx, 'Wait Time']           = st.session_state.edit_wait_times
+                        st.success(f"✅ Service '{selected_svc}' updated.")
                         st.session_state.temp_edit_route = []
                         st.rerun()
-                    else:
-                        st.error("Please add at least one station.")
-                if edit_interval:
 
+                if edit_interval:
                     if edit_bus_count > 1:
                         st.session_state.show_interval_modal = True
                         st.session_state.show_interval_modal_dismissed = False
                         st.session_state.edit_svc = True
                     else:
-                        st.error("At least 2 buses are required to set intervals.")
+                        st.error("Need at least 2 buses.")
                 if edit_buffer:
-
-                    if edit_bus_count > 0:
-                        st.session_state.show_buffer_modal = True
-                        st.session_state.show_buffer_modal_dismissed = False
-                        st.session_state.edit_svc = True
-                    else:
-                        st.error("At least 1 bus is required to set buffer times.")
+                    st.session_state.show_buffer_modal = True
+                    st.session_state.show_buffer_modal_dismissed = False
+                    st.session_state.edit_svc = True
                 if edit_wait:
-                    if edit_bus_count > 0:
-                        st.session_state.show_wait_modal = True
-                        st.session_state.show_wait_modal_dismissed = False
-                        st.session_state.edit_svc = True
-                
-            col2, col3 = st.columns(2)
-            with col2:
-                if st.button("➕ Add Bus Station to Route",key="add_bus_station_to_route_edit"):
-                    st.session_state.show_add_ext_busStation_modal_dismissed=False
-                    st.session_state.edit_route_data=True
+                    st.session_state.show_wait_modal = True
+                    st.session_state.show_wait_modal_dismissed = False
+                    st.session_state.edit_svc = True
+
+            # Edit route buttons
+            erb1, erb2 = st.columns(2)
+            with erb1:
+                if st.button("🚏 Add Bus Station", key="add_bus_station_to_route_edit", use_container_width=True):
+                    st.session_state.show_add_ext_busStation_modal_dismissed = False
+                    st.session_state.edit_route_data = True
                     st.session_state.show_add_ext_busStation_modal = True
-            with col3:
-                if st.button("➕ Add Charging Station to Route",key="add_charging_station_to_route_edit"):
-                    st.session_state.show_add_charger_station_modal_dismissed=False
-                    st.session_state.edit_route_data=True
+            with erb2:
+                if st.button("⚡ Add Charging Station", key="add_charging_station_to_route_edit", use_container_width=True):
+                    st.session_state.show_add_charger_station_modal_dismissed = False
+                    st.session_state.edit_route_data = True
                     st.session_state.show_add_charger_station_modal = True
-    
+
+            # Edit route preview
             if st.session_state.temp_edit_route:
-
-                st.subheader("Edit Route")
-
-                if st.button("🔄 Reverse Route",key="edit_reverse"):
+                st.markdown('<div class="section-header">🗺️ Edit Route</div>', unsafe_allow_html=True)
+                if st.button("🔄 Reverse Route", key="edit_reverse"):
                     st.session_state.temp_edit_route.reverse()
                     st.rerun()
-
                 for i, stop in enumerate(st.session_state.temp_edit_route):
-                    col1, col2, col3, col4, col5 = st.columns([4, 2, 1, 1, 1])
-                    with col1:
-                        st.markdown(
-                            f"{stop['Station']}  \n"
-                            f"Lat: {stop['Latitude']} | Lon: {stop['Longitude']}  \n"
-                            f"Charging: {'✅' if stop['ChargeFlag'] else '❌'} | Type: {'Bus Stand' if stop['BusStation'] else 'Charger'}"
-                        )
-                    with col2:
-                        st.write(f"Position: {i + 1}")
-                    with col3:
+                    badge = '<span class="badge-bus">Bus Stand</span>' if stop['BusStation'] else '<span class="badge-charger">Charger</span>'
+                    charge_icon = "✅" if stop['ChargeFlag'] else "❌"
+                    st.markdown(f"""
+                    <div class="stop-card">
+                      <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span class="stop-name">#{i+1} &nbsp; {stop['Station']}</span>
+                        {badge}
+                      </div>
+                      <div class="stop-meta">
+                        📍 {stop['Latitude']:.4f}, {stop['Longitude']:.4f} &nbsp;|&nbsp; Charge: {charge_icon}
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    ec1, ec2, ec3 = st.columns([1,1,1])
+                    with ec1:
                         if i > 0 and st.button("⬆", key=f"up{i}"):
-                            st.session_state.temp_edit_route[i], st.session_state.temp_edit_route[i - 1] = (
-                                st.session_state.temp_edit_route[i - 1],
-                                st.session_state.temp_edit_route[i],
-                            )
+                            st.session_state.temp_edit_route[i], st.session_state.temp_edit_route[i-1] = st.session_state.temp_edit_route[i-1], st.session_state.temp_edit_route[i]
                             st.rerun()
-                    with col4:
-                        if i < len(st.session_state.temp_edit_route) - 1 and st.button("⬇", key=f"down{i}"):
-                            st.session_state.temp_edit_route[i], st.session_state.temp_edit_route[i + 1] = (
-                                st.session_state.temp_edit_route[i + 1],
-                                st.session_state.temp_edit_route[i],
-                            )
+                    with ec2:
+                        if i < len(st.session_state.temp_edit_route)-1 and st.button("⬇", key=f"down{i}"):
+                            st.session_state.temp_edit_route[i], st.session_state.temp_edit_route[i+1] = st.session_state.temp_edit_route[i+1], st.session_state.temp_edit_route[i]
                             st.rerun()
-                    with col5:
+                    with ec3:
                         if st.button("🗑️", key=f"delete{i}"):
                             st.session_state.temp_edit_route.pop(i)
                             st.rerun()
+
+            # ── Modals triggered from edit column ──
             if st.session_state.get("show_add_ext_busStation_modal", False) and not st.session_state.get("show_add_ext_busStation_modal_dismissed", False):
                 @st.dialog("Add Existing Bus Station")
                 def bus_station_modal():
                     stations = st.session_state.bus_stations
                     if not stations:
-                        st.warning("No saved bus stations found.")
+                        st.warning("No bus stations saved yet.")
                         if st.button("Close"):
                             st.session_state.show_add_ext_busStation_modal = False
                             st.rerun()
                         return
-
-                    search_query = st.text_input("Search Station Name")
-                    filtered = [s for s in stations if search_query.lower() in s['Station'].lower()]
-
+                    search_query  = st.text_input("Search")
+                    filtered      = [s for s in stations if search_query.lower() in s['Station'].lower()]
                     if not filtered:
-                        st.info("No matching stations found.")
+                        st.info("No matching stations.")
                         if st.button("Close"):
                             st.session_state.show_add_ext_busStation_modal = False
                             st.rerun()
                         return
-
                     station_names = [s['Station'] for s in filtered]
-                    selected_name = st.selectbox("Select Existing Station", station_names)
-                    selected = next((s for s in filtered if s['Station'] == selected_name), None)
-
-                    if selected:
-                        st.write(f"**Latitude:** {selected['Latitude']}")
-                        st.write(f"**Longitude:** {selected['Longitude']}")
-                        st.write(f"**Charging Allowed:** {'Yes' if selected['ChargeFlag'] else 'No'}")
-
-                        if st.button("Add to Route", key="ext_bus_add"):
+                    selected_name = st.selectbox("Select Station", station_names)
+                    selected_s    = next((s for s in filtered if s['Station'] == selected_name), None)
+                    if selected_s:
+                        st.write(f"📍 {selected_s['Latitude']}, {selected_s['Longitude']}")
+                        if st.button("Add to Route"):
                             if st.session_state.edit_route_data:
-                                st.session_state.temp_edit_route.append(selected.copy())
+                                st.session_state.temp_edit_route.append(selected_s.copy())
                             else:
-                               
-                                st.session_state.temp_route.append(selected.copy())
-                            st.session_state.edit_route_data=False
-
-                            st.success(f"Added '{selected_name}' to route.")
+                                st.session_state.temp_route.append(selected_s.copy())
+                            st.session_state.edit_route_data = False
                             st.session_state.show_add_ext_busStation_modal = False
                             st.rerun()
-
-                        if st.button("Cancel", key="ext_bus_cancel"):
+                        if st.button("Cancel"):
                             st.session_state.show_add_ext_busStation_modal = False
                             st.rerun()
                 st.session_state.show_add_ext_busStation_modal_dismissed = True
                 bus_station_modal()
-                
-            # Modal for adding Charging Station from existing chargers
+
             if st.session_state.get("show_add_charger_station_modal", False) and not st.session_state.get("show_add_charger_station_modal_dismissed", False):
-                @st.dialog("Add Charging Station")
+                @st.dialog("Add Charging Station to Route")
                 def charger_station_modal():
                     chargers_df = st.session_state.charging_stations
                     if chargers_df.empty:
-                        st.warning("No charging stations available. Please add in tab 1.")
-                        if st.button("Close", key="close_no_chargers"): 
+                        st.warning("No charging stations. Add one in the Stations tab.")
+                        if st.button("Close"):
                             st.session_state.show_add_charger_station_modal = False
                             st.rerun()
                         return
-
                     station_selected = st.selectbox("Select Charging Station", chargers_df['Station Name'].tolist())
-                    # Autofill lat/lon for display (read only)
                     lat = float(chargers_df.loc[chargers_df['Station Name'] == station_selected, 'Latitude'])
                     lon = float(chargers_df.loc[chargers_df['Station Name'] == station_selected, 'Longitude'])
-                    st.write(f"Latitude: {lat}, Longitude: {lon}")
-                    charge = True
-                    is_bus = False
-
-                    if st.button("Add", key="charger_modal_add"):
+                    st.write(f"📍 Lat: {lat}, Lon: {lon}")
+                    if st.button("Add to Route"):
+                        entry = {"Station": station_selected, "Latitude": lat, "Longitude": lon, "ChargeFlag": True, "BusStation": False}
                         if st.session_state.edit_route_data:
-                            st.session_state.temp_edit_route.append({
-                            "Station": station_selected,
-                            "Latitude": lat,
-                            "Longitude": lon,
-                            "ChargeFlag": charge,
-                            "BusStation": is_bus
-                        })
+                            st.session_state.temp_edit_route.append(entry)
                         else:
-                            
-                            st.session_state.temp_route.append({
-                            "Station": station_selected,
-                            "Latitude": lat,
-                            "Longitude": lon,
-                            "ChargeFlag": charge,
-                            "BusStation": is_bus
-                        })
-                        st.session_state.edit_route_data=False
-
-                        st.warning(f"Charging station '{station_selected}' added to route.")
+                            st.session_state.temp_route.append(entry)
+                        st.session_state.edit_route_data = False
                         st.session_state.show_add_charger_station_modal = False
                         st.rerun()
-
-                    if st.button("Cancel", key="charger_modal_cancel"):
+                    if st.button("Cancel"):
                         st.session_state.show_add_charger_station_modal = False
                         st.rerun()
                 st.session_state.show_add_charger_station_modal_dismissed = True
                 charger_station_modal()
-                            
+        else:
+            st.info("No services available to edit. Add a service first.")
+
+    # ── Interval / Buffer / Wait modals ──
     if st.session_state.get('show_interval_modal', False) and not st.session_state.get('show_interval_modal_dismissed', False):
-            @st.dialog("Set Departure Intervals")
-            def interval_modal():
-                intervals = []
-                if not st.session_state.edit_svc:
-                    for i in range(1,bus_count ):
-                        
-                        val = st.number_input(f"Interval between Bus {i} and {i+1} (min)", min_value=0, key=f"modal_interval_{i}")
-                        intervals.append(val)   
-                    if st.button("Confirm & Save"):
-                        intervals.insert(0, 0)
-                        st.session_state.pending_service.at[0,'Departure Intervals'] = intervals
-                        st.session_state.show_interval_modal = False
-                        st.session_state.add_service_cond[1]=True
-                        st.rerun()
-
-                    if st.button("Cancel"):
-                        st.session_state.show_interval_modal = False
-                        st.rerun()
-                else:
-                    for i in range(1, edit_bus_count):
-                        val = st.number_input(f"Interval between Bus {i} and {i+1} (min)", min_value=0, key=f"modal_interval{i}", value=st.session_state.edit_departure_intervals[i] if st.session_state.edit_departure_intervals else 0)
-                        intervals.append(val)
-                    if st.button("Confirm & Save "):
-                        intervals.insert(0, 0)
-                        st.session_state.edit_departure_intervals = intervals
-                        st.session_state.show_interval_modal = False
-                        st.rerun()
-
-                    if st.button("Cancel "):
-                        st.session_state.show_interval_modal = False
-                        st.rerun()
-            st.session_state.show_interval_modal_dismissed = True
-            interval_modal()
+        @st.dialog("Set Departure Intervals")
+        def interval_modal():
+            intervals = []
+            if not st.session_state.edit_svc:
+                for i in range(1, bus_count):
+                    val = st.number_input(f"Interval Bus {i} → {i+1} (min)", min_value=0, key=f"modal_interval_{i}")
+                    intervals.append(val)
+                if st.button("Confirm & Save"):
+                    intervals.insert(0, 0)
+                    st.session_state.pending_service.at[0, 'Departure Intervals'] = intervals
+                    st.session_state.show_interval_modal = False
+                    st.session_state.add_service_cond[1] = True
+                    st.rerun()
+                if st.button("Cancel"):
+                    st.session_state.show_interval_modal = False
+                    st.rerun()
+            else:
+                for i in range(1, edit_bus_count):
+                    default = st.session_state.edit_departure_intervals[i] if st.session_state.edit_departure_intervals and i < len(st.session_state.edit_departure_intervals) else 0
+                    val = st.number_input(f"Interval Bus {i} → {i+1} (min)", min_value=0, key=f"modal_interval{i}", value=default)
+                    intervals.append(val)
+                if st.button("Confirm & Save "):
+                    intervals.insert(0, 0)
+                    st.session_state.edit_departure_intervals = intervals
+                    st.session_state.show_interval_modal = False
+                    st.rerun()
+                if st.button("Cancel "):
+                    st.session_state.show_interval_modal = False
+                    st.rerun()
+        st.session_state.show_interval_modal_dismissed = True
+        interval_modal()
 
     if st.session_state.get("show_buffer_modal", False) and not st.session_state.get("show_buffer_modal_dismissed", False):
-        @st.dialog("Set Buffer Tolerance")
+        @st.dialog("Set Buffer Times")
         def buffer_modal():
-            buffers=[]
+            buffers = []
             if not st.session_state.edit_svc:
                 for i in range(bus_count):
-                    buffer = st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}")
-                    buffers.append(buffer)
+                    buffers.append(st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}"))
                 if st.button("Confirm & Save"):
-
-                    st.session_state.pending_service.at[0,'Buffer Times'] = buffers
+                    st.session_state.pending_service.at[0, 'Buffer Times'] = buffers
                     st.session_state.show_buffer_modal = False
                     st.session_state.show_buffer_modal_dismissed = True
-                    st.session_state.add_service_cond[0]=True
+                    st.session_state.add_service_cond[0] = True
                     st.rerun()
-
                 if st.button("Cancel"):
                     st.session_state.show_buffer_modal = False
                     st.rerun()
             else:
                 for i in range(edit_bus_count):
-                    buffer = st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer{i}", value=st.session_state.edit_buffer_times[i] if st.session_state.edit_buffer_times else 0)
-                    buffers.append(buffer)
+                    default = st.session_state.edit_buffer_times[i] if st.session_state.edit_buffer_times and i < len(st.session_state.edit_buffer_times) else 0
+                    buffers.append(st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer{i}", value=default))
                 if st.button("Confirm & Save "):
                     st.session_state.edit_buffer_times = buffers
                     st.session_state.show_buffer_modal = False
                     st.session_state.show_buffer_modal_dismissed = True
                     st.rerun()
-
                 if st.button("Cancel "):
                     st.session_state.show_buffer_modal = False
         st.session_state.show_buffer_modal_dismissed = True
         buffer_modal()
+
     if st.session_state.get("show_wait_modal", False) and not st.session_state.get("show_wait_modal_dismissed", False):
-        @st.dialog("Set Wait Time")
+        @st.dialog("Set Wait Times")
         def wait_modal():
             wait_times = []
             if not st.session_state.edit_svc:
                 for i in range(bus_count):
-                    wait_time = st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait_{i}")
-                    wait_times.append(wait_time)
+                    wait_times.append(st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait_{i}"))
                 if st.button("Confirm & Save"):
-                    st.session_state.pending_service.at[0,'Wait Time'] = wait_times
+                    st.session_state.pending_service.at[0, 'Wait Time'] = wait_times
                     st.session_state.show_wait_modal = False
                     st.session_state.show_wait_modal_dismissed = True
-                    st.session_state.add_service_cond[2]=True
+                    st.session_state.add_service_cond[2] = True
                     st.rerun()
-
                 if st.button("Cancel"):
                     st.session_state.show_wait_modal = False
                     st.rerun()
             else:
                 for i in range(edit_bus_count):
-                    wait_time = st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait{i}")
-                    wait_times.append(wait_time)
+                    wait_times.append(st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait{i}"))
                 if st.button("Confirm & Save "):
                     st.session_state.edit_wait_times = wait_times
                     st.session_state.show_wait_modal = False
                     st.session_state.show_wait_modal_dismissed = True
                     st.rerun()
-
                 if st.button("Cancel "):
                     st.session_state.show_wait_modal = False
         st.session_state.show_wait_modal_dismissed = True
         wait_modal()
-    st.subheader("Show Service Route & Distances")
-    selected_srv = st.selectbox("Select Service", st.session_state.services['Service Name'].tolist())
-    if selected_srv:
-        svc = st.session_state.services[
-            st.session_state.services['Service Name'] == selected_srv
-        ].iloc[0]
-        route = pd.DataFrame(svc['Route Data'])
 
-        # Compute distances and times
-        coords = list(zip(route['Latitude'], route['Longitude']))
-        start_idx = route[route['BusStation']].index.min()
-        start_coord = coords[start_idx]
+    # ── Service route map viewer ──
+    st.divider()
+    st.markdown('<div class="section-header">🗺️ Service Route Viewer</div>', unsafe_allow_html=True)
+    svc_names = st.session_state.services['Service Name'].tolist()
+    if svc_names:
+        selected_srv = st.selectbox("Select service to view", svc_names, key="srv_view_sel")
+        if selected_srv:
+            svc_v = st.session_state.services[st.session_state.services['Service Name'] == selected_srv].iloc[0]
+            route_v = pd.DataFrame(svc_v['Route Data'])
 
-        distances = [i['distance_text'] for i in svc['Distance Time Matrix']]
-        est_times = [i['duration_text'] for i in svc['Distance Time Matrix']]
+            distances  = [i['distance_text'] for i in svc_v['Distance Time Matrix']]
+            est_times  = [i['duration_text']  for i in svc_v['Distance Time Matrix']]
+            route_v['Distance from Prev'] = distances
+            route_v['Est. Time from Prev'] = est_times
+            route_v['Type'] = route_v['BusStation'].apply(lambda x: "Bus Station" if x else "Charger")
 
-        route['Distance from Prev (km)'] = distances
-        route['Est. Time from Prev (min)'] = est_times
-        route['Station Type'] = route['BusStation'].apply(lambda x: "Bus Station" if x else "Charger")
+            rv1, rv2 = st.columns([3, 2])
+            with rv1:
+                st.dataframe(
+                    route_v[['Station','Distance from Prev','Est. Time from Prev','ChargeFlag','Type']],
+                    use_container_width=True, hide_index=True
+                )
+                if st.button("📋 Load Route into Editor", key="load_route_btn"):
+                    st.session_state.temp_route = svc_v['Route Data'].copy()
+                    st.success("Route loaded. Switch to Add Service to modify.")
+                    st.rerun()
+            with rv2:
+                route_data_v = svc_v['Route Data']
+                if route_data_v:
+                    route_data_hash = get_route_data_hash(route_data_v)
+                    if route_data_hash not in st.session_state.route_data_cache:
+                        st.session_state.route_data_cache[route_data_hash] = route_data_v
+                    path_segments = get_directions_path(route_data_hash, st.session_state.route_data_cache)
+                    m = build_folium_map(route_data_v, path_segments=path_segments)
+                    st_folium(m, width=420, height=380)
+    else:
+        st.info("Add a service to see its route on the map.")
 
-        st.dataframe(route[['Station', 'Distance from Prev (km)', 'Est. Time from Prev (min)', 'ChargeFlag', 'Station Type']], use_container_width=True)
-
-        if st.button("Load Route"):
-            st.session_state.temp_route = svc['Route Data'].copy()
-            st.success(f"Loaded route for '{svc['Service Name']}'. Make changes and click Save.")
-            st.rerun()
-
-        
-        
-        route_data = svc['Route Data']
-        
-        if route_data:
-            route_data_hash = get_route_data_hash(route_data)
-            if route_data_hash not in st.session_state.route_data_cache:
-                st.session_state.route_data_cache[route_data_hash] = route_data
-
-            route_data_cache = st.session_state.route_data_cache
-
-            path_segments = get_directions_path(route_data_hash,st.session_state.route_data_cache)
-            m = build_folium_map(route_data, path_segments=path_segments)
-            m_data=st_folium(m, width=500, height=500)
-
-                
-            
-
-# --- EV Network Screen ---
+# ══════════════════════════════════════════
+# TAB 2 — EV NETWORK
+# ══════════════════════════════════════════
 with tabs[2]:
-    st.header("EV Network")
-    search_n = st.text_input("Search Network by Name")
-    net_df = st.session_state.networks.copy()
+    net_all = st.session_state.networks.copy()
+
+    # Metric row
+    n_success = int((net_all['Status'] == 'SUCCESS').sum()) if not net_all.empty and 'Status' in net_all.columns else 0
+    n_fail    = len(net_all) - n_success if not net_all.empty else 0
+    nm1, nm2, nm3 = st.columns(3)
+    with nm1:
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{len(net_all)}</div><div class="metric-label">Total Networks</div></div>', unsafe_allow_html=True)
+    with nm2:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#51cf66">{n_success}</div><div class="metric-label">Successful</div></div>', unsafe_allow_html=True)
+    with nm3:
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#ff6b6b">{n_fail}</div><div class="metric-label">Failed</div></div>', unsafe_allow_html=True)
+
+    search_n = st.text_input("🔍 Search network by name", placeholder="Type to filter…", key="net_search")
+    net_df = net_all.copy()
     if search_n:
         net_df = net_df[net_df['Network Name'].str.contains(search_n, case=False)]
-    st.dataframe(net_df[['Network Name','Status']], use_container_width=True)
 
-    st.subheader("Add & Run Network")
-    with st.form("add_network"):
-        net_name = st.text_input("Network Name", key="new_net_name")
-        tol = st.number_input("Tolerance (%)", min_value=0.0, format="%.2f", key="new_net_tol")
-        svcs = st.multiselect("Select Services", st.session_state.services['Service Name'].tolist(), key="new_net_svcs")
-
-            
-        if st.form_submit_button("Add & Run"):
-            # Filter only selected services
-            services_subset = get_services_by_names(svcs)
-            
-            # Before calling run_network_allocation()
-
-
-            bus_schedule,charging_events,alloc_df,simulated_events,success = simulate_bus_trips( services_subset, tol,charging_stations_df=st.session_state.charging_stations)
-            if not success:
-                
-                st.error("❌ Allocation failed. Network creation rolled back.")
-                
-            else:
-                # Save results into the network row
-                st.session_state.networks = pd.concat([
-                    st.session_state.networks,
-                    pd.DataFrame([{
-                        'Network Name': net_name,
-                        'Tolerance (%)': tol,
-                        'Services': svcs,
-                        'Status': 'SUCCESS',
-                        'Allocations': alloc_df,
-                        'Bus Schedule': bus_schedule,
-                        'Logs': [],
-                        'Charging Events': charging_events  
-                    }])
-                ], ignore_index=True)
+    with st.expander("📋 All Networks", expanded=True):
+        if net_df.empty:
+            st.info("No networks yet.")
+        else:
+            disp = net_df[['Network Name','Tolerance (%)','Status']].copy()
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+            del_net = st.selectbox("Select network to delete", [""] + net_df['Network Name'].tolist(), key="del_net_sel")
+            if del_net and st.button("🗑️ Delete Network", key="del_net_btn"):
+                st.session_state.networks = st.session_state.networks[
+                    st.session_state.networks['Network Name'] != del_net
+                ].reset_index(drop=True)
+                st.success(f"Network '{del_net}' deleted.")
                 st.rerun()
-                st.success(f"Network '{net_name}' created and algorithm run successfully.")
-    
-    st.subheader("Bus Schedule & Charging Slot Allocation")
 
+    st.divider()
+    na1, na2 = st.columns([1, 1])
 
-    if not net_df.empty:
-        selected_net = st.selectbox("Select Network for Allocation View", net_df['Network Name'].tolist(), key="alloc_net_view")
-        network = st.session_state.networks[
-            st.session_state.networks['Network Name'] == selected_net
-        ].iloc[0]
-        
-        alloc_df = pd.DataFrame(network['Allocations']) if not isinstance(network['Allocations'],pd.DataFrame) else network['Allocations']
-        
-        charging_events = network.get('Charging Events', [])
-        bus_schedule = network.get('Bus Schedule', [])
-        bus_df = pd.DataFrame(bus_schedule)
-        
-        
-        
-        invalid_arrival_df = bus_df[bus_df['arrival'] == "--"].copy()
-        valid_arrival_df = bus_df[bus_df['arrival'] != "--"].copy()
-        valid_arrival_df['arrival'] = pd.to_datetime(valid_arrival_df['arrival'], format="%H:%M", errors='coerce')
-        valid_arrival_df = valid_arrival_df.sort_values(by='arrival')
-        valid_arrival_df['arrival'] = valid_arrival_df['arrival'].dt.strftime('%H:%M')
-        sorted_bus_df = pd.concat([invalid_arrival_df, valid_arrival_df], ignore_index=True)
+    # ── ADD NETWORK ──
+    with na1:
+        st.markdown('<div class="section-header">➕ Add & Run Network</div>', unsafe_allow_html=True)
+        with st.form("add_network"):
+            net_name = st.text_input("Network Name", key="new_net_name")
+            tol      = st.number_input("Tolerance (%)", min_value=0.0, format="%.2f", key="new_net_tol")
+            svcs     = st.multiselect("Select Services", st.session_state.services['Service Name'].tolist(), key="new_net_svcs")
 
-        st.subheader(f"Charging Slot Allocation for '{selected_net}'")
+            if st.form_submit_button("▶️ Add & Run Simulation", type="primary"):
+                if not net_name:
+                    st.error("Network name is required.")
+                elif not svcs:
+                    st.error("Select at least one service.")
+                elif st.session_state.charging_stations.empty:
+                    st.error("Add at least one charging station first.")
+                else:
+                    services_subset = get_services_by_names(svcs)
+                    with st.spinner("Running allocation simulation…"):
+                        bus_schedule, charging_events, alloc_df, simulated_events, success = simulate_bus_trips(
+                            services_subset, tol, charging_stations_df=st.session_state.charging_stations
+                        )
+                    if not success:
+                        st.error("❌ Allocation failed — charger overlap detected. Network not saved.")
+                    else:
+                        st.session_state.networks = pd.concat([
+                            st.session_state.networks,
+                            pd.DataFrame([{
+                                'Network Name': net_name, 'Tolerance (%)': tol,
+                                'Services': svcs, 'Status': 'SUCCESS',
+                                'Allocations': alloc_df, 'Bus Schedule': bus_schedule,
+                                'Logs': [], 'Charging Events': charging_events
+                            }])
+                        ], ignore_index=True)
+                        st.success(f"✅ Network '{net_name}' created successfully.")
+                        st.rerun()
 
-        if isinstance(alloc_df, pd.DataFrame) and not alloc_df.empty:
-            # Merge charging_events with allocation if needed or show separately
-            alloc_df_display = alloc_df.copy()
-            enrich_map = {
-                (e['station'], e['bus_name']): e for e in charging_events
-            }
+    # ── EDIT NETWORK ──
+    with na2:
+        st.markdown('<div class="section-header">✏️ Edit Network</div>', unsafe_allow_html=True)
+        if not net_all.empty:
+            net_names = net_all['Network Name'].tolist()
+            selected_edit_net = st.selectbox("Select network to edit", net_names, key="edit_net")
+            net_row = st.session_state.networks[st.session_state.networks['Network Name'] == selected_edit_net].iloc[0]
 
-            # Enrich allocation with battery data
-            alloc_df_display['Battery % After Charging'] = alloc_df_display.apply(
-                lambda row: enrich_map.get((row['Station Name'], row['Bus Name']), {}).get('battery_after_pct', None),
-                axis=1
-            )
-            alloc_df_display['Battery After Charging (kWh)'] = alloc_df_display.apply(
-                lambda row: enrich_map.get((row['Station Name'], row['Bus Name']), {}).get('battery_after_kwh', None),
-                axis=1
-            )
+            edit_name = st.text_input("Network Name", value=net_row['Network Name'], key="edit_name")
+            edit_tol  = st.number_input("Tolerance (%)", min_value=0.0, value=float(net_row['Tolerance (%)']), key="edit_tol")
 
-            st.dataframe(alloc_df_display)
-        else:
-            st.info("No allocation found for this network.")   
-         
-         
-        st.subheader("🔋 Charging Demand Summary (All Networks)")
-
-        all_events=[]
-        all_events = net_df.get('Charging Events', []).iloc[0]
-        
-        if  all_events:
-            df = pd.DataFrame(all_events)
-            cs_df = st.session_state.charging_stations.copy()
-            df['Duration_Hours'] = df['energy_to_charge'] / df['station'].map({
-                row['Station Name']: row['Charging Capacity (kW)']
-                for _, row in cs_df.iterrows()
-            })
-
-            bus_counts = df.groupby('station')['bus_name'].nunique().rename("Buses Charged")
-            total_kwh = df.groupby('station')['energy_to_charge'].sum().rename("Total Charge (kWh)")
-            hours_util = df.groupby('station')['Duration_Hours'].sum().rename("Hours Utilized")
-
-            summary_df = pd.concat([bus_counts, total_kwh, hours_util], axis=1).reset_index().rename(columns={'station': 'Station Name'})
-
-            # Join to get number of chargers
-            summary_df = summary_df.merge(cs_df[['Station Name', 'Number of Chargers']], on='Station Name', how='left')
-            summary_df['Utilization (%)'] = (summary_df['Hours Utilized'] / (16 * summary_df['Number of Chargers'])) * 100
-            summary_df['Utilization (%)'] = summary_df['Utilization (%)'].round(2)
-
-            st.dataframe(summary_df[['Station Name', 'Buses Charged', 'Total Charge (kWh)', 'Hours Utilized', 'Utilization (%)']],
-                        use_container_width=True)
-        else:
-            st.info("No charging data available from networks yet.")
-        
-   
-            
-        st.subheader("Charger Allocation")
-        station_names = sorted({event['station'] for event in charging_events})
-        selected = st.selectbox("Select Station for Allocation View", station_names)
-        rows = []
-        charging_event_per_station = [event for event in charging_events if event['station'] == selected]
-        total_chargers = st.session_state.charging_stations[st.session_state.charging_stations['Station Name'] == selected].iloc[0]["Number of Chargers"]
-
-
-# Prepare rows
-        rows = []
-
-        for charger_num in range(1, total_chargers + 1):
-            charger_key = str(charger_num)
-            events = [e for e in charging_event_per_station if str(e.get('charger_num')) == charger_key]
-
-            if not events:
-                rows.append({
-                    "Charger": f"Charger {charger_key}",
-                    "Start": to_24h_datetime(0),
-                    "Finish": to_24h_datetime(1),
-                    "Service": "Unused"
-                })
-            else:
-                for event in events:
-                    start_min = to_24h_reference(event["start_time"])
-                    end_min = to_24h_reference(event["end_time"])
-
-                    # Handle overnight wrap
-                    if end_min < start_min:
-                        end_min += 1440
-
-                    rows.append({
-                        "Charger": f"Charger {charger_key}",
-                        "Start": to_24h_datetime(start_min),
-                        "Finish": to_24h_datetime(end_min),
-                        "Service": event.get("service", "Unknown")
-                    })
-
-        df = pd.DataFrame(rows)
-
-        # Plot Gantt chart
-        if df.empty:
-            st.write("No charging events to display.")
-        else:
-
-            fig = px.timeline(
-                df,
-                x_start="Start",
-                x_end="Finish",
-                y="Charger",
-                color="Service",
-                title="Charging Station Gantt Chart (24h View)"
-            )
-
-            fig.update_layout(
-                xaxis=dict(
-                    tickformat="%H:%M",
-                    title="Time (24h)"
-                )
-            )
-
-            fig.update_yaxes(autorange="reversed")
-            fig.update_traces(marker_line_color='black', marker_line_width=1)
-
-            st.plotly_chart(fig)
-
-
-        st.dataframe(sorted_bus_df)
-
-
-    if not st.session_state.networks.empty:
-        st.subheader("✏️ Edit Existing Network")
-        net_names = st.session_state.networks['Network Name'].tolist()
-        selected_edit_net = st.selectbox("Select Network to Edit", net_names, key="edit_net")
-
-        net_row = st.session_state.networks[
-            st.session_state.networks['Network Name'] == selected_edit_net
-        ].iloc[0]
-
-        edit_name = st.text_input("Network Name", value=net_row['Network Name'], key="edit_name")
-        edit_tol = st.number_input("Tolerance (%)", min_value=0.0, value=float(net_row['Tolerance (%)']), key="edit_tol")
-
-        services_list = []
-
-        if isinstance(net_row['Services'], list):
-            # Check if list of dicts:
-            if len(net_row['Services']) > 0 and isinstance(net_row['Services'][0], dict):
-                for svc in net_row['Services']:
-                    services_list.append(svc.get('Service Name', ''))
-            else:
-                # maybe list of strings already
-                services_list = [str(s) for s in net_row['Services']]
-
-        elif isinstance(net_row['Services'], pd.DataFrame):
-            services_list = net_row['Services']['Service Name'].tolist()
-
-        else:
             services_list = []
+            if isinstance(net_row['Services'], list):
+                if len(net_row['Services']) > 0 and isinstance(net_row['Services'][0], dict):
+                    services_list = [s.get('Service Name', '') for s in net_row['Services']]
+                else:
+                    services_list = [str(s) for s in net_row['Services']]
+            elif isinstance(net_row['Services'], pd.DataFrame):
+                services_list = net_row['Services']['Service Name'].tolist()
 
-        all_services = st.session_state.services['Service Name'].tolist()
-        edit_svcs = st.multiselect("Select Services", all_services, default=services_list, key="edit_svcs")
+            all_services = st.session_state.services['Service Name'].tolist()
+            edit_svcs = st.multiselect("Select Services", all_services, default=services_list, key="edit_svcs")
 
-        if st.button("💾 Save Network Changes"):
-            #TODO::fix functionality 
-            idx = st.session_state.networks[st.session_state.networks['Network Name'] == selected_edit_net].index[0]
-            services_subset = get_services_by_names(edit_svcs)
-            success=update_network(idx, edit_name, edit_tol, services_subset)
-            msg_box = st.empty()
-            if success:
-                msg_box.success(f"✅ Network '{edit_name}' updated successfully.")
+            if st.button("💾 Save & Re-run Network", use_container_width=True, key="save_net_btn"):
+                idx             = st.session_state.networks[st.session_state.networks['Network Name'] == selected_edit_net].index[0]
+                services_subset = get_services_by_names(edit_svcs)
+                with st.spinner("Re-running simulation…"):
+                    success = update_network(idx, edit_name, edit_tol, services_subset)
+                if success:
+                    st.success(f"✅ Network '{edit_name}' updated.")
+                    st.rerun()
+                else:
+                    st.error("❌ Allocation failed. No changes saved.")
+        else:
+            st.info("No networks to edit yet.")
+
+    # ── Results dashboard ──
+    st.divider()
+    if not net_df.empty:
+        st.markdown('<div class="section-header">📊 Allocation Results</div>', unsafe_allow_html=True)
+        selected_net = st.selectbox("Select network to inspect", net_df['Network Name'].tolist(), key="alloc_net_view")
+        network      = st.session_state.networks[st.session_state.networks['Network Name'] == selected_net].iloc[0]
+
+        alloc_df       = pd.DataFrame(network['Allocations']) if not isinstance(network['Allocations'], pd.DataFrame) else network['Allocations']
+        charging_events= network.get('Charging Events', [])
+        bus_schedule   = network.get('Bus Schedule', [])
+        bus_df         = pd.DataFrame(bus_schedule)
+
+        res_t1, res_t2 = st.tabs(["Charging Allocations", "Bus Schedule"])
+
+        with res_t1:
+            if isinstance(alloc_df, pd.DataFrame) and not alloc_df.empty:
+                enrich_map = {(e['station'], e['bus_name']): e for e in charging_events}
+                alloc_df_display = alloc_df.copy()
+                alloc_df_display['Battery % After'] = alloc_df_display.apply(
+                    lambda row: f"{enrich_map.get((row['Station Name'], row['Bus Name']), {}).get('battery_after_pct', 0):.1f}%", axis=1
+                )
+                alloc_df_display['kWh After'] = alloc_df_display.apply(
+                    lambda row: round(enrich_map.get((row['Station Name'], row['Bus Name']), {}).get('battery_after_kwh', 0), 2), axis=1
+                )
+                st.dataframe(alloc_df_display, use_container_width=True, hide_index=True)
             else:
-                msg_box.warning("⚠️ Allocation failed. No changes were made.")
+                st.info("No allocation data for this network.")
 
-            msg_box.empty()
-    
-        
+        with res_t2:
+            if not bus_df.empty:
+                invalid_arr = bus_df[bus_df['arrival'] == "--"].copy()
+                valid_arr   = bus_df[bus_df['arrival'] != "--"].copy()
+                valid_arr['arrival'] = pd.to_datetime(valid_arr['arrival'], format="%H:%M", errors='coerce')
+                valid_arr = valid_arr.sort_values('arrival')
+                valid_arr['arrival'] = valid_arr['arrival'].dt.strftime('%H:%M')
+                sorted_bus_df = pd.concat([invalid_arr, valid_arr], ignore_index=True)
+                st.dataframe(sorted_bus_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No bus schedule data.")
 
-            
-        
-        
-        
-        
+        # Charging demand summary
+        st.divider()
+        st.markdown('<div class="section-header">🔋 Charging Demand Summary (All Networks)</div>', unsafe_allow_html=True)
+        all_events = []
+        if 'Charging Events' in net_df.columns:
+            for _evts in net_df['Charging Events']:
+                if isinstance(_evts, list):
+                    all_events.extend(_evts)
 
-    
+        if all_events:
+            ev_df    = pd.DataFrame(all_events)
+            cs_cap   = {row['Station Name']: row['Charging Capacity (kW)'] for _, row in st.session_state.charging_stations.iterrows()}
+            ev_df['Duration_Hours'] = ev_df['energy_to_charge'] / ev_df['station'].map(cs_cap)
+            bus_counts  = ev_df.groupby('station')['bus_name'].nunique().rename("Buses Charged")
+            total_kwh   = ev_df.groupby('station')['energy_to_charge'].sum().rename("Total kWh")
+            hours_util  = ev_df.groupby('station')['Duration_Hours'].sum().rename("Hours Utilized")
+            summary_df  = pd.concat([bus_counts, total_kwh, hours_util], axis=1).reset_index().rename(columns={'station':'Station Name'})
+            summary_df  = summary_df.merge(st.session_state.charging_stations[['Station Name','Number of Chargers']], on='Station Name', how='left')
+            summary_df['Utilization (%)'] = (summary_df['Hours Utilized'] / (16 * summary_df['Number of Chargers']) * 100).round(2)
+            st.dataframe(summary_df[['Station Name','Buses Charged','Total kWh','Hours Utilized','Utilization (%)']], use_container_width=True, hide_index=True)
+        else:
+            st.info("No charging data across networks yet.")
+
+        # Gantt chart
+        st.divider()
+        st.markdown('<div class="section-header">📅 Charger Timeline (Gantt)</div>', unsafe_allow_html=True)
+        if charging_events:
+            station_names = sorted({e['station'] for e in charging_events})
+            sel_station   = st.selectbox("Select Station", station_names, key="gantt_station")
+            total_chargers= int(st.session_state.charging_stations[
+                st.session_state.charging_stations['Station Name'] == sel_station
+            ].iloc[0]["Number of Chargers"])
+
+            rows = []
+            for charger_num in range(1, total_chargers + 1):
+                charger_key = str(charger_num)
+                events      = [e for e in charging_events if e['station'] == sel_station and str(e.get('charger_num')) == charger_key]
+                if not events:
+                    rows.append({"Charger": f"Charger {charger_key}", "Start": to_24h_datetime(0), "Finish": to_24h_datetime(1), "Service": "Unused"})
+                else:
+                    for event in events:
+                        start_min = to_24h_reference(event["start_time"])
+                        end_min   = to_24h_reference(event["end_time"])
+                        if end_min < start_min:
+                            end_min += 1440
+                        rows.append({"Charger": f"Charger {charger_key}", "Start": to_24h_datetime(start_min), "Finish": to_24h_datetime(end_min), "Service": event.get("service","Unknown")})
+
+            gantt_df = pd.DataFrame(rows)
+            fig = px.timeline(gantt_df, x_start="Start", x_end="Finish", y="Charger", color="Service",
+                              title=f"Charger Allocation — {sel_station}",
+                              color_discrete_sequence=px.colors.qualitative.Vivid)
+            fig.update_layout(
+                xaxis=dict(tickformat="%H:%M", title="Time of Day"),
+                plot_bgcolor="#1a1d27", paper_bgcolor="#1a1d27",
+                font=dict(color="#cdd9f0"), title_font_size=14,
+                legend=dict(bgcolor="#1a1d27", bordercolor="#2e3250")
+            )
+            fig.update_yaxes(autorange="reversed")
+            fig.update_traces(marker_line_color='#2e3250', marker_line_width=1)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Run a network to see the charger timeline.")
