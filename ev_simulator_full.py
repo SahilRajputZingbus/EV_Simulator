@@ -115,6 +115,22 @@ def save_session_to_mongo(user_id="default_user"):
             f.write(f"{datetime.now()}: Failed to save session for user {user_id}: {str(e)}\n")
         st.error(f"Failed to save session: {e}")
 
+def list_session_ids():
+    if collection is None:
+        return []
+    try:
+        return [doc["_id"] for doc in collection.find({}, {"_id": 1})]
+    except Exception:
+        return []
+
+def reset_session_state():
+    st.session_state.bus_stations       = []
+    st.session_state.charging_stations  = pd.DataFrame(columns=['Station Name','Charging Capacity (kW)','Number of Chargers','Latitude','Longitude'])
+    st.session_state.services           = pd.DataFrame(columns=['Service Name','Bus Charging Capacity (kW)','Mileage (km/kWh)','Number of Buses','Departure Intervals','Route Data','Start Time','Distance (km)','Duration (mins)','Distance Time Matrix','Buffer Times','Wait Time'])
+    st.session_state.networks           = pd.DataFrame(columns=['Network Name','Tolerance (%)','Services','Status','Allocations','Logs'])
+    st.session_state.temp_route         = []
+    st.session_state.route_data_cache   = {}
+
 def load_session_from_mongo(user_id="default_user"):
     if collection is None:
         st.error("MongoDB is not connected. Load is unavailable.")
@@ -428,19 +444,50 @@ def get_directions_path(route_data_h,route_data_cache):
 
 
 def build_folium_map(route_data, path_segments):
-    m = folium.Map(location=[route_data[0]['Latitude'], route_data[0]['Longitude']], zoom_start=7)
+    m = folium.Map(
+        location=[route_data[0]['Latitude'], route_data[0]['Longitude']],
+        zoom_start=7,
+        tiles="CartoDB dark_matter",
+        attr=" "
+    )
 
-    for station in route_data:
-        color = 'green' if station["BusStation"] else 'red'
+    # Hide Leaflet attribution control entirely
+    m.get_root().html.add_child(folium.Element("""
+        <style>
+        .leaflet-control-attribution { display: none !important; }
+        .leaflet-control-zoom a {
+            background: #1e2235 !important; color: #74c0fc !important;
+            border-color: #2e3250 !important; border-radius: 6px !important;
+        }
+        </style>
+    """))
+
+    for i, station in enumerate(route_data):
+        is_bus    = station["BusStation"]
+        dot_color = "#74c0fc" if is_bus else "#51cf66"
+        label     = "B" if is_bus else "C"
+        icon_html = f"""
+            <div style="
+                width:30px; height:30px; border-radius:50%;
+                background:{dot_color}; border:2px solid rgba(255,255,255,0.25);
+                display:flex; align-items:center; justify-content:center;
+                font-weight:700; font-size:12px; color:#0f1117;
+                box-shadow:0 2px 8px rgba(0,0,0,0.5);
+            ">{label}</div>
+        """
         folium.Marker(
             location=[station["Latitude"], station["Longitude"]],
-            popup=f"{station['Station']} ({'Bus' if station['BusStation'] else 'Charger'})",
-            icon=folium.Icon(color=color)
+            popup=folium.Popup(
+                f"<b>{station['Station']}</b><br>{'Bus Stand' if is_bus else 'Charger'}"
+                f"{'<br>⚡ Charging stop' if station['ChargeFlag'] else ''}",
+                max_width=180
+            ),
+            tooltip=folium.Tooltip(f"{'🚏' if is_bus else '⚡'} {station['Station']}"),
+            icon=folium.DivIcon(html=icon_html, icon_size=(30, 30), icon_anchor=(15, 15))
         ).add_to(m)
 
     for segment in path_segments:
-        folium.PolyLine(locations=segment, color='blue', weight=5).add_to(m)
-
+        folium.PolyLine(locations=segment, color='#4dabf7', weight=3, opacity=0.75).add_to(m)
 
     return m
 
@@ -556,6 +603,9 @@ div[data-testid="stForm"] {
 /* ── Dataframe ── */
 [data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
 
+/* ── Folium map ── */
+iframe { border-radius: 14px !important; border: 1px solid #2e3250 !important; }
+
 /* ── Buttons ── */
 button[kind="primaryFormSubmit"], button[kind="secondary"] {
     border-radius: 8px !important; font-weight: 600 !important;
@@ -567,17 +617,75 @@ button[kind="primaryFormSubmit"], button[kind="secondary"] {
 st.markdown('<div class="page-title">⚡ EV Network Planning & Simulation</div>', unsafe_allow_html=True)
 st.markdown('<div class="page-sub">Plan charging infrastructure, define bus services, and run allocation simulations</div>', unsafe_allow_html=True)
 
+# ── Save / Load dialogs ──
+@st.dialog("💾 Save Session")
+def save_dialog():
+    existing_ids = list_session_ids()
+    if collection is None:
+        st.error("MongoDB is not connected. Save unavailable.")
+        if st.button("Close"):
+            st.rerun()
+        return
+
+    mode = st.radio("Save to", ["New save ID", "Overwrite existing"], horizontal=True)
+
+    if mode == "New save ID":
+        new_id = st.text_input("Enter a save ID", placeholder="e.g. sahil-test-1")
+        if st.button("💾 Save", type="primary", use_container_width=True):
+            if not new_id.strip():
+                st.error("Save ID cannot be empty.")
+            elif new_id.strip() in existing_ids:
+                st.error(f"'{new_id}' already exists. Choose 'Overwrite existing' or pick a different name.")
+            else:
+                save_session_to_mongo(new_id.strip())
+                st.rerun()
+    else:
+        if not existing_ids:
+            st.info("No existing saves found. Use 'New save ID' instead.")
+        else:
+            sel = st.selectbox("Select save to overwrite", existing_ids)
+            st.warning(f"This will overwrite **{sel}** permanently.")
+            if st.button("⚠️ Overwrite", type="primary", use_container_width=True):
+                save_session_to_mongo(sel)
+                st.rerun()
+
+@st.dialog("📂 Load Session")
+def load_dialog():
+    existing_ids = list_session_ids()
+    if collection is None:
+        st.error("MongoDB is not connected. Load unavailable.")
+        if st.button("Close"):
+            st.rerun()
+        return
+
+    st.markdown("**Load from a saved session** or start fresh.")
+    st.divider()
+
+    if existing_ids:
+        sel = st.selectbox("Select a save to load", existing_ids)
+        if st.button("📂 Load", type="primary", use_container_width=True):
+            load_session_from_mongo(sel)
+            st.rerun()
+    else:
+        st.info("No saved sessions found.")
+
+    st.divider()
+    st.markdown("**Or start with a blank canvas**")
+    if st.button("🗑️ Load Blank Canvas", use_container_width=True):
+        reset_session_state()
+        st.success("Canvas cleared.")
+        st.rerun()
+
 # ── Sidebar ──
 with st.sidebar:
     st.markdown("### 💾 Session")
-    USER_ID = st.text_input("User ID", value="1")
     col_s, col_l = st.columns(2)
     with col_s:
-        if st.button("Save", use_container_width=True):
-            save_session_to_mongo(USER_ID)
+        if st.button("💾 Save", use_container_width=True):
+            save_dialog()
     with col_l:
-        if st.button("Load", use_container_width=True):
-            load_session_from_mongo(USER_ID)
+        if st.button("📂 Load", use_container_width=True):
+            load_dialog()
 
     st.divider()
     st.markdown("### 📊 Overview")
@@ -1226,39 +1334,64 @@ with tabs[1]:
     st.divider()
     st.markdown('<div class="section-header">🗺️ Service Route Viewer</div>', unsafe_allow_html=True)
     svc_names = st.session_state.services['Service Name'].tolist()
-    if svc_names:
+    if not svc_names:
+        st.info("Add a service to see its route on the map.")
+    else:
         selected_srv = st.selectbox("Select service to view", svc_names, key="srv_view_sel")
         if selected_srv:
-            svc_v = st.session_state.services[st.session_state.services['Service Name'] == selected_srv].iloc[0]
-            route_v = pd.DataFrame(svc_v['Route Data'])
+            svc_v     = st.session_state.services[st.session_state.services['Service Name'] == selected_srv].iloc[0]
+            route_v   = pd.DataFrame(svc_v['Route Data'])
+            dtm       = svc_v['Distance Time Matrix']
+            distances = [d['distance_text'] for d in dtm]
+            durations = [d['duration_text']  for d in dtm]
 
-            distances  = [i['distance_text'] for i in svc_v['Distance Time Matrix']]
-            est_times  = [i['duration_text']  for i in svc_v['Distance Time Matrix']]
-            route_v['Distance from Prev'] = distances
-            route_v['Est. Time from Prev'] = est_times
-            route_v['Type'] = route_v['BusStation'].apply(lambda x: "Bus Station" if x else "Charger")
+            total_dist = round(sum(d['distance_m'] for d in dtm) / 1000, 1)
+            total_dur  = round(sum(d['duration_s'] for d in dtm) / 60, 0)
+            n_stops    = len(route_v)
+            n_chargers = int(route_v['ChargeFlag'].sum())
 
-            rv1, rv2 = st.columns([3, 2])
-            with rv1:
-                st.dataframe(
-                    route_v[['Station','Distance from Prev','Est. Time from Prev','ChargeFlag','Type']],
-                    use_container_width=True, hide_index=True
-                )
-                if st.button("📋 Load Route into Editor", key="load_route_btn"):
-                    st.session_state.temp_route = svc_v['Route Data'].copy()
-                    st.success("Route loaded. Switch to Add Service to modify.")
-                    st.rerun()
-            with rv2:
-                route_data_v = svc_v['Route Data']
-                if route_data_v:
-                    route_data_hash = get_route_data_hash(route_data_v)
-                    if route_data_hash not in st.session_state.route_data_cache:
-                        st.session_state.route_data_cache[route_data_hash] = route_data_v
-                    path_segments = get_directions_path(route_data_hash, st.session_state.route_data_cache)
-                    m = build_folium_map(route_data_v, path_segments=path_segments)
-                    st_folium(m, width=420, height=380)
-    else:
-        st.info("Add a service to see its route on the map.")
+            # ── Summary stats ──
+            vs1, vs2, vs3, vs4 = st.columns(4)
+            vs1.markdown(f'<div class="metric-card"><div class="metric-value">{total_dist} km</div><div class="metric-label">Total Distance</div></div>', unsafe_allow_html=True)
+            vs2.markdown(f'<div class="metric-card"><div class="metric-value">{int(total_dur)} min</div><div class="metric-label">Est. Duration</div></div>', unsafe_allow_html=True)
+            vs3.markdown(f'<div class="metric-card"><div class="metric-value">{n_stops}</div><div class="metric-label">Stops</div></div>', unsafe_allow_html=True)
+            vs4.markdown(f'<div class="metric-card"><div class="metric-value">{n_chargers}</div><div class="metric-label">Charge Points</div></div>', unsafe_allow_html=True)
+
+            # ── Full-width map ──
+            route_data_v = svc_v['Route Data']
+            with st.spinner("Loading route map…"):
+                route_data_hash = get_route_data_hash(route_data_v)
+                if route_data_hash not in st.session_state.route_data_cache:
+                    st.session_state.route_data_cache[route_data_hash] = route_data_v
+                path_segments = get_directions_path(route_data_hash, st.session_state.route_data_cache)
+                m = build_folium_map(route_data_v, path_segments=path_segments)
+                st_folium(m, use_container_width=True, height=480, returned_objects=[])
+
+            # ── Route stops list ──
+            st.markdown('<div class="section-header" style="margin-top:18px">📍 Route Stops</div>', unsafe_allow_html=True)
+            for idx, row in route_v.iterrows():
+                dist_text = distances[idx] if idx < len(distances) else "—"
+                dur_text  = durations[idx]  if idx < len(durations)  else "—"
+                badge     = '<span class="badge-bus">Bus Stand</span>'   if row['BusStation'] else '<span class="badge-charger">Charger</span>'
+                charge    = "✅ Charging" if row['ChargeFlag'] else "❌ No charge"
+                leg_info  = f'<span style="color:#8892b0;font-size:0.78rem">↑ {dist_text} &nbsp;·&nbsp; {dur_text}</span>' if idx > 0 else ""
+                st.markdown(f"""
+                <div class="stop-card" style="display:flex;align-items:center;gap:14px">
+                  <div style="min-width:28px;text-align:center;font-weight:700;color:#4dabf7;font-size:1rem">{idx+1}</div>
+                  <div style="flex:1">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+                      <span class="stop-name">{row['Station']}</span>{badge}
+                    </div>
+                    <div class="stop-meta">{charge} &nbsp;·&nbsp; {leg_info}</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+            if st.button("📋 Load Route into Editor", key="load_route_btn"):
+                st.session_state.temp_route = svc_v['Route Data'].copy()
+                st.success("Route loaded into Add Service editor.")
+                st.rerun()
 
 # ══════════════════════════════════════════
 # TAB 2 — EV NETWORK
