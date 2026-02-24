@@ -901,6 +901,10 @@ with tabs[1]:
     # ── ADD SERVICE ──
     with c1:
         st.markdown('<div class="section-header">➕ Add Service</div>', unsafe_allow_html=True)
+        _cond = st.session_state.get("add_service_cond", [False, False, False])
+        _interval_lbl = "⏱ Intervals ✅" if _cond[1] else "⏱ Intervals"
+        _buffer_lbl   = "🛡 Buffer ✅"   if _cond[0] else "🛡 Buffer"
+        _wait_lbl     = "⏳ Wait ✅"     if _cond[2] else "⏳ Wait"
         with st.form("add_service"):
             svc_name  = st.text_input("Service Name", key="new_svc_name")
             f1, f2    = st.columns(2)
@@ -913,20 +917,30 @@ with tabs[1]:
 
             btn_cols = st.columns(4)
             with btn_cols[0]:
-                add_interval = st.form_submit_button("⏱ Intervals")
+                add_interval = st.form_submit_button(_interval_lbl)
             with btn_cols[1]:
-                add_buffer   = st.form_submit_button("🛡 Buffer")
+                add_buffer   = st.form_submit_button(_buffer_lbl)
             with btn_cols[2]:
-                add_wait     = st.form_submit_button("⏳ Wait")
+                add_wait     = st.form_submit_button(_wait_lbl)
             with btn_cols[3]:
                 submitted    = st.form_submit_button("✅ Add", type="primary")
 
         if submitted:
+            _missing_items = []
+            if not st.session_state.add_service_cond[0]:
+                _missing_items.append("Buffer Times")
+            if not st.session_state.add_service_cond[2]:
+                _missing_items.append("Wait Times")
+            if bus_count > 1 and not st.session_state.add_service_cond[1]:
+                _missing_items.append("Departure Intervals")
             if not st.session_state.temp_route:
                 st.error("Add at least one station to the route first.")
-            elif not (st.session_state.add_service_cond[0] and st.session_state.add_service_cond[2] and
-                      (st.session_state.add_service_cond[1] or bus_count == 1)):
-                st.error("Please set Buffer Time and Wait Time (and Departure Intervals if >1 bus).")
+            elif not svc_name.strip():
+                st.error("Service Name cannot be empty.")
+            elif svc_name.strip() in st.session_state.services['Service Name'].tolist():
+                st.error(f"A service named '{svc_name.strip()}' already exists. Choose a different name.")
+            elif _missing_items:
+                st.error(f"Please configure before adding: {', '.join(_missing_items)}.")
             else:
                 with st.spinner("Fetching distances from Google Maps…"):
                     distance_time_matrix = [{"distance_m":0,"distance_text":"0 km","duration_s":0,"duration_text":"0 mins"}]
@@ -948,15 +962,17 @@ with tabs[1]:
                 st.session_state.pending_service.at[0,'Distance Time Matrix']      = distance_time_matrix
 
                 st.session_state.temp_route = []
-                _di = st.session_state.pending_service.at[0, 'Departure Intervals']
-                if _di is None or (not isinstance(_di, list) and pd.isna(_di)):
-                    st.session_state.pending_service.at[0, 'Departure Intervals'] = [0] * (bus_count - 1)
-                _bt = st.session_state.pending_service.at[0, 'Buffer Times']
-                if _bt is None or (not isinstance(_bt, list) and pd.isna(_bt)):
-                    st.session_state.pending_service.at[0, 'Buffer Times'] = [0] * bus_count
-                _wt = st.session_state.pending_service.at[0, 'Wait Time']
-                if _wt is None or (not isinstance(_wt, list) and pd.isna(_wt)):
-                    st.session_state.pending_service.at[0, 'Wait Time'] = [0] * bus_count
+                def _resize_arr(arr, n):
+                    if not isinstance(arr, list):
+                        return [0] * n
+                    return (arr + [0] * n)[:n]
+                _n_int = max(bus_count - 1, 1)
+                st.session_state.pending_service.at[0, 'Departure Intervals'] = _resize_arr(
+                    st.session_state.pending_service.at[0, 'Departure Intervals'], _n_int)
+                st.session_state.pending_service.at[0, 'Buffer Times'] = _resize_arr(
+                    st.session_state.pending_service.at[0, 'Buffer Times'], bus_count)
+                st.session_state.pending_service.at[0, 'Wait Time'] = _resize_arr(
+                    st.session_state.pending_service.at[0, 'Wait Time'], bus_count)
 
                 st.session_state.services = pd.concat([
                     st.session_state.services,
@@ -986,6 +1002,18 @@ with tabs[1]:
             st.session_state.show_wait_modal = True
             st.session_state.show_wait_modal_dismissed = False
             st.session_state.edit_svc = False
+
+        # Clear form button — only show when there's something to clear
+        if not st.session_state.pending_service.empty or st.session_state.temp_route or any(st.session_state.get("add_service_cond", [])):
+            if st.button("🗑️ Clear Form", key="clear_add_svc", help="Reset all add-service fields and clear the current route"):
+                st.session_state.pending_service = pd.DataFrame(columns=[
+                    'Service Name','Bus Charging Capacity (kW)','Mileage (km/kWh)',
+                    'Number of Buses','Departure Intervals','Route Data','Start Time',
+                    'Buffer Times','Distance (km)','Duration (mins)','Distance Time Matrix','Wait Time'
+                ])
+                st.session_state.add_service_cond = [False, False, False]
+                st.session_state.temp_route = []
+                st.rerun()
 
         # Route builder buttons
         rb1, rb2 = st.columns(2)
@@ -1039,24 +1067,52 @@ with tabs[1]:
             selected_svc = st.selectbox("Select service to edit", srv_df['Service Name'].tolist(), key="edit_svc_select")
             svc = st.session_state.services[st.session_state.services['Service Name'] == selected_svc].iloc[0]
 
+            # When service changes: reset all edit state and close any open modals
             if selected_svc != st.session_state.prev_selected_svc:
-                st.session_state.edit_departure_intervals = svc['Departure Intervals'].copy() if isinstance(svc['Departure Intervals'], list) else None
-                st.session_state.temp_edit_route          = svc['Route Data'].copy() if isinstance(svc['Route Data'], list) else []
-                st.session_state.edit_buffer_times        = svc['Buffer Times'].copy() if isinstance(svc['Buffer Times'], list) else None
-                st.session_state.edit_wait_times          = svc['Wait Time'].copy() if isinstance(svc['Wait Time'], list) else None
-                st.session_state.prev_selected_svc        = selected_svc
+                st.session_state.edit_departure_intervals       = svc['Departure Intervals'].copy() if isinstance(svc['Departure Intervals'], list) else None
+                st.session_state.temp_edit_route                = svc['Route Data'].copy() if isinstance(svc['Route Data'], list) else []
+                st.session_state.edit_buffer_times              = svc['Buffer Times'].copy() if isinstance(svc['Buffer Times'], list) else None
+                st.session_state.edit_wait_times                = svc['Wait Time'].copy() if isinstance(svc['Wait Time'], list) else None
+                st.session_state.prev_selected_svc              = selected_svc
+                st.session_state._editing_svc_locked            = selected_svc
+                # Close any open modals so they don't carry over stale bus counts
+                st.session_state.show_interval_modal            = False
+                st.session_state.show_buffer_modal              = False
+                st.session_state.show_wait_modal                = False
+
+            # Always keep the locked target in sync with current selection
+            st.session_state._editing_svc_locked = selected_svc
+
+            # Banner showing exactly which service is being edited
+            st.markdown(
+                f'<div style="background:#1e2235;border:1px solid #3b5bdb;border-radius:8px;'
+                f'padding:8px 14px;margin-bottom:10px;color:#74c0fc;font-size:0.88rem">'
+                f'✏️ Editing: <strong>{selected_svc}</strong></div>',
+                unsafe_allow_html=True
+            )
+
+            # Use service-specific widget keys so Streamlit always shows the correct
+            # values for the selected service instead of reusing cached widget state
+            _k = selected_svc  # shorthand for key suffix
 
             with st.form("edit_service"):
                 ef1, ef2 = st.columns(2)
                 with ef1:
-                    edit_svc_cap  = st.number_input("Bus Battery (kWh)", min_value=1, key="edit_svc_cap",   value=int(svc['Bus Charging Capacity (kW)']))
-                    edit_bus_count= st.number_input("Number of Buses",   min_value=1, step=1, key="edit_bus_count", value=int(svc['Number of Buses']))
+                    edit_svc_cap   = st.number_input("Bus Battery (kWh)", min_value=1,
+                                                     key=f"edit_svc_cap_{_k}",
+                                                     value=int(svc['Bus Charging Capacity (kW)']))
+                    edit_bus_count = st.number_input("Number of Buses", min_value=1, step=1,
+                                                     key=f"edit_bus_count_{_k}",
+                                                     value=int(svc['Number of Buses']))
                 with ef2:
-                    edit_mileage  = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f", key="edit_svc_mileage", value=float(svc['Mileage (km/kWh)']))
+                    edit_mileage   = st.number_input("Mileage (km/kWh)", min_value=0.1, format="%.2f",
+                                                     key=f"edit_svc_mileage_{_k}",
+                                                     value=float(svc['Mileage (km/kWh)']))
                     _st_val = svc['Start Time']
                     if isinstance(_st_val, str):
                         _st_val = datetime.strptime(_st_val.split("T")[-1][:5], "%H:%M").time()
-                    edit_start_time = st.time_input("Start Time", value=_st_val, key="edit_start_time")
+                    edit_start_time = st.time_input("Start Time", value=_st_val,
+                                                    key=f"edit_start_time_{_k}")
 
                 eb1, eb2, eb3, eb4 = st.columns(4)
                 with eb1:
@@ -1068,9 +1124,17 @@ with tabs[1]:
                 with eb4:
                     editService   = st.form_submit_button("💾 Save", type="primary")
 
+                # Store bus count in session state so modals always use the right value
+                st.session_state._edit_bus_count_current = edit_bus_count
+
                 if editService:
+                    # Use the locked service name — not the selectbox — to avoid
+                    # writing to the wrong row if state drifted
+                    target_svc = st.session_state._editing_svc_locked
                     if not st.session_state.temp_edit_route:
                         st.error("Route cannot be empty.")
+                    elif target_svc not in st.session_state.services['Service Name'].values:
+                        st.error(f"Service '{target_svc}' no longer exists.")
                     else:
                         with st.spinner("Fetching distances…"):
                             distance_time_matrix = [{"distance_m":0,"distance_text":"0 km","duration_s":0,"duration_text":"0 mins"}]
@@ -1081,7 +1145,7 @@ with tabs[1]:
                         total_distance = sum(d["distance_m"] for d in distance_time_matrix) / 1000
                         total_duration = sum(d["duration_s"] for d in distance_time_matrix) / 60
 
-                        idx = st.session_state.services[st.session_state.services['Service Name'] == selected_svc].index[0]
+                        idx = st.session_state.services[st.session_state.services['Service Name'] == target_svc].index[0]
                         st.session_state.services.at[idx, 'Bus Charging Capacity (kW)'] = edit_svc_cap
                         st.session_state.services.at[idx, 'Mileage (km/kWh)']           = edit_mileage
                         st.session_state.services.at[idx, 'Number of Buses']            = edit_bus_count
@@ -1101,8 +1165,9 @@ with tabs[1]:
                         st.session_state.services.at[idx, 'Departure Intervals'] = st.session_state.edit_departure_intervals
                         st.session_state.services.at[idx, 'Buffer Times']        = st.session_state.edit_buffer_times
                         st.session_state.services.at[idx, 'Wait Time']           = st.session_state.edit_wait_times
-                        st.success(f"✅ Service '{selected_svc}' updated.")
+                        st.success(f"✅ Service '{target_svc}' updated.")
                         st.session_state.temp_edit_route = []
+                        st.session_state.prev_selected_svc = None  # force re-init on next render
                         st.rerun()
 
                 if edit_interval:
@@ -1238,15 +1303,24 @@ with tabs[1]:
             st.info("No services available to edit. Add a service first.")
 
     # ── Interval / Buffer / Wait modals ──
+    # Read bus counts from session state so modals always reflect the right service/add context
+    _add_bus_count  = st.session_state.get(f"new_bus_count", 1)
+    _edit_bus_count = st.session_state.get("_edit_bus_count_current", 1)
+
     if st.session_state.get('show_interval_modal', False) and not st.session_state.get('show_interval_modal_dismissed', False):
-        @st.dialog("Set Departure Intervals")
+        _for_edit = st.session_state.get("edit_svc", False)
+        _n_buses  = _edit_bus_count if _for_edit else _add_bus_count
+        _svc_label = st.session_state.get("_editing_svc_locked", "service") if _for_edit else "new service"
+        @st.dialog(f"Set Departure Intervals — {_svc_label}")
         def interval_modal():
             intervals = []
-            if not st.session_state.edit_svc:
-                for i in range(1, bus_count):
-                    val = st.number_input(f"Interval Bus {i} → {i+1} (min)", min_value=0, key=f"modal_interval_{i}")
-                    intervals.append(val)
-                if st.button("Confirm & Save"):
+            if not _for_edit:
+                _pnd_int = st.session_state.pending_service
+                _exist_int = _pnd_int.at[0, 'Departure Intervals'] if not _pnd_int.empty else None
+                for i in range(1, _n_buses):
+                    _def = _exist_int[i] if isinstance(_exist_int, list) and i < len(_exist_int) else 0
+                    intervals.append(st.number_input(f"Interval Bus {i} → {i+1} (min)", min_value=0, key=f"modal_interval_{i}", value=_def))
+                if st.button("Confirm & Save", type="primary"):
                     intervals.insert(0, 0)
                     st.session_state.pending_service.at[0, 'Departure Intervals'] = intervals
                     st.session_state.show_interval_modal = False
@@ -1256,29 +1330,34 @@ with tabs[1]:
                     st.session_state.show_interval_modal = False
                     st.rerun()
             else:
-                for i in range(1, edit_bus_count):
+                for i in range(1, _n_buses):
                     default = st.session_state.edit_departure_intervals[i] if st.session_state.edit_departure_intervals and i < len(st.session_state.edit_departure_intervals) else 0
-                    val = st.number_input(f"Interval Bus {i} → {i+1} (min)", min_value=0, key=f"modal_interval{i}", value=default)
-                    intervals.append(val)
-                if st.button("Confirm & Save "):
+                    intervals.append(st.number_input(f"Interval Bus {i} → {i+1} (min)", min_value=0, key=f"modal_interval_e{i}", value=default))
+                if st.button("Confirm & Save", type="primary"):
                     intervals.insert(0, 0)
                     st.session_state.edit_departure_intervals = intervals
                     st.session_state.show_interval_modal = False
                     st.rerun()
-                if st.button("Cancel "):
+                if st.button("Cancel"):
                     st.session_state.show_interval_modal = False
                     st.rerun()
         st.session_state.show_interval_modal_dismissed = True
         interval_modal()
 
     if st.session_state.get("show_buffer_modal", False) and not st.session_state.get("show_buffer_modal_dismissed", False):
-        @st.dialog("Set Buffer Times")
+        _for_edit = st.session_state.get("edit_svc", False)
+        _n_buses  = _edit_bus_count if _for_edit else _add_bus_count
+        _svc_label = st.session_state.get("_editing_svc_locked", "service") if _for_edit else "new service"
+        @st.dialog(f"Set Buffer Times — {_svc_label}")
         def buffer_modal():
             buffers = []
-            if not st.session_state.edit_svc:
-                for i in range(bus_count):
-                    buffers.append(st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}"))
-                if st.button("Confirm & Save"):
+            if not _for_edit:
+                _pnd_buf = st.session_state.pending_service
+                _exist_buf = _pnd_buf.at[0, 'Buffer Times'] if not _pnd_buf.empty else None
+                for i in range(_n_buses):
+                    _def = _exist_buf[i] if isinstance(_exist_buf, list) and i < len(_exist_buf) else 0
+                    buffers.append(st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_{i}", value=_def))
+                if st.button("Confirm & Save", type="primary"):
                     st.session_state.pending_service.at[0, 'Buffer Times'] = buffers
                     st.session_state.show_buffer_modal = False
                     st.session_state.show_buffer_modal_dismissed = True
@@ -1288,27 +1367,33 @@ with tabs[1]:
                     st.session_state.show_buffer_modal = False
                     st.rerun()
             else:
-                for i in range(edit_bus_count):
+                for i in range(_n_buses):
                     default = st.session_state.edit_buffer_times[i] if st.session_state.edit_buffer_times and i < len(st.session_state.edit_buffer_times) else 0
-                    buffers.append(st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer{i}", value=default))
-                if st.button("Confirm & Save "):
+                    buffers.append(st.number_input(f"Buffer for Bus {i+1} (min)", min_value=0, key=f"modal_buffer_e{i}", value=default))
+                if st.button("Confirm & Save", type="primary"):
                     st.session_state.edit_buffer_times = buffers
                     st.session_state.show_buffer_modal = False
                     st.session_state.show_buffer_modal_dismissed = True
                     st.rerun()
-                if st.button("Cancel "):
+                if st.button("Cancel"):
                     st.session_state.show_buffer_modal = False
         st.session_state.show_buffer_modal_dismissed = True
         buffer_modal()
 
     if st.session_state.get("show_wait_modal", False) and not st.session_state.get("show_wait_modal_dismissed", False):
-        @st.dialog("Set Wait Times")
+        _for_edit = st.session_state.get("edit_svc", False)
+        _n_buses  = _edit_bus_count if _for_edit else _add_bus_count
+        _svc_label = st.session_state.get("_editing_svc_locked", "service") if _for_edit else "new service"
+        @st.dialog(f"Set Wait Times — {_svc_label}")
         def wait_modal():
             wait_times = []
-            if not st.session_state.edit_svc:
-                for i in range(bus_count):
-                    wait_times.append(st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait_{i}"))
-                if st.button("Confirm & Save"):
+            if not _for_edit:
+                _pnd_wait = st.session_state.pending_service
+                _exist_wait = _pnd_wait.at[0, 'Wait Time'] if not _pnd_wait.empty else None
+                for i in range(_n_buses):
+                    _def = _exist_wait[i] if isinstance(_exist_wait, list) and i < len(_exist_wait) else 0
+                    wait_times.append(st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait_{i}", value=_def))
+                if st.button("Confirm & Save", type="primary"):
                     st.session_state.pending_service.at[0, 'Wait Time'] = wait_times
                     st.session_state.show_wait_modal = False
                     st.session_state.show_wait_modal_dismissed = True
@@ -1318,14 +1403,15 @@ with tabs[1]:
                     st.session_state.show_wait_modal = False
                     st.rerun()
             else:
-                for i in range(edit_bus_count):
-                    wait_times.append(st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait{i}"))
-                if st.button("Confirm & Save "):
+                for i in range(_n_buses):
+                    _def = st.session_state.edit_wait_times[i] if st.session_state.get('edit_wait_times') and i < len(st.session_state.edit_wait_times) else 0
+                    wait_times.append(st.number_input(f"Wait Time for Bus {i+1} (min)", min_value=0, key=f"modal_wait_e{i}", value=_def))
+                if st.button("Confirm & Save", type="primary"):
                     st.session_state.edit_wait_times = wait_times
                     st.session_state.show_wait_modal = False
                     st.session_state.show_wait_modal_dismissed = True
                     st.rerun()
-                if st.button("Cancel "):
+                if st.button("Cancel"):
                     st.session_state.show_wait_modal = False
         st.session_state.show_wait_modal_dismissed = True
         wait_modal()
